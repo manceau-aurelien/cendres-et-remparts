@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cendres et Remparts</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #14110f; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; font-family: "Trebuchet MS", "Segoe UI", sans-serif; }
+  canvas { display: block; touch-action: manipulation; }
+  [hidden] { display: none !important; }
+  #salon { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(10, 9, 9, .6); }
+  #salon > div { box-sizing: border-box; width: min(580px, 94vw); max-height: 94vh; overflow: auto; background: #1d2220; border: 3px solid #5d6b62; border-radius: 16px; padding: 24px 28px; color: #eee; font-size: 17px; line-height: 1.45; }
+  #salon h2 { margin: 0 0 14px; color: #ffe3b0; font-size: 28px; }
+  #salon p { margin: 10px 0; }
+  #salon button { font: bold 18px "Trebuchet MS", sans-serif; color: #fff; background: #34403a; border: 2px solid #5d6b62; border-radius: 10px; padding: 11px 18px; margin: 4px 6px 4px 0; cursor: pointer; }
+  #salon button:hover, #salon button:focus-visible { border-color: #9fd16b; background: #4a5a52; outline: none; }
+  #salon input, #salon textarea { box-sizing: border-box; background: #101312; color: #fff; border: 2px solid #5d6b62; border-radius: 10px; padding: 10px; font: 18px Consolas, monospace; }
+  #salon input { width: 190px; letter-spacing: 4px; text-transform: uppercase; }
+  #salon textarea { width: 100%; height: 74px; font-size: 12px; resize: none; }
+  #salon details { margin-top: 18px; color: #c5cfc8; font-size: 15px; }
+  #salon summary { cursor: pointer; }
+  #code { font: bold 46px Consolas, monospace; letter-spacing: 8px; color: #9fd16b; }
+  #info { min-height: 1.4em; color: #ffd04a; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1600" height="900"></canvas>
+<div id="salon" hidden><div>
+  <h2>Jouer en ligne</h2>
+  <div id="s-choix">
+    <p><button id="b-creer">Créer une partie</button></p>
+    <p>ou rejoindre : <input id="i-code" maxlength="6" autocomplete="off" spellcheck="false" aria-label="Code de la partie"> <button id="b-rejoindre">Rejoindre</button></p>
+  </div>
+  <div id="s-code" hidden>
+    <p>Donnez ce code à votre ami :</p>
+    <p><span id="code"></span> <button id="b-copier">Copier</button></p>
+  </div>
+  <p id="info" role="status"></p>
+  <p id="s-go" hidden><button id="b-go">Commencer</button></p>
+  <details id="s-manuel">
+    <summary>Le code ne marche pas ? Échange manuel</summary>
+    <p>L'hôte : <button id="b-inviter">1. Créer une invitation</button></p>
+    <textarea id="t-a" placeholder="Invitation : l'hôte la copie et l'envoie ; l'ami la colle ici" aria-label="Invitation"></textarea>
+    <p>L'ami : <button id="b-accepter">2. Répondre à l'invitation</button></p>
+    <textarea id="t-b" placeholder="Réponse : l'ami la copie et la renvoie ; l'hôte la colle ici" aria-label="Réponse"></textarea>
+    <p>L'hôte : <button id="b-conclure">3. Se connecter</button></p>
+  </details>
+  <p><button id="b-retour">Retour au menu</button></p>
+</div></div>
+<script src="sim.js"></script>
+<script src="reseau.js"></script>
+<script src="jeu.js"></script>
+</body>
+</html>

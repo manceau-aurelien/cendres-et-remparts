@@ -1,0 +1,1320 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cendres et Remparts</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #14110f; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; font-family: "Trebuchet MS", "Segoe UI", sans-serif; }
+  canvas { display: block; touch-action: manipulation; }
+  [hidden] { display: none !important; }
+  #salon { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(10, 9, 9, .6); }
+  #salon > div { box-sizing: border-box; width: min(580px, 94vw); max-height: 94vh; overflow: auto; background: #1d2220; border: 3px solid #5d6b62; border-radius: 16px; padding: 24px 28px; color: #eee; font-size: 17px; line-height: 1.45; }
+  #salon h2 { margin: 0 0 14px; color: #ffe3b0; font-size: 28px; }
+  #salon p { margin: 10px 0; }
+  #salon button { font: bold 18px "Trebuchet MS", sans-serif; color: #fff; background: #34403a; border: 2px solid #5d6b62; border-radius: 10px; padding: 11px 18px; margin: 4px 6px 4px 0; cursor: pointer; }
+  #salon button:hover, #salon button:focus-visible { border-color: #9fd16b; background: #4a5a52; outline: none; }
+  #salon input, #salon textarea { box-sizing: border-box; background: #101312; color: #fff; border: 2px solid #5d6b62; border-radius: 10px; padding: 10px; font: 18px Consolas, monospace; }
+  #salon input { width: 190px; letter-spacing: 4px; text-transform: uppercase; }
+  #salon textarea { width: 100%; height: 74px; font-size: 12px; resize: none; }
+  #salon details { margin-top: 18px; color: #c5cfc8; font-size: 15px; }
+  #salon summary { cursor: pointer; }
+  #code { font: bold 46px Consolas, monospace; letter-spacing: 8px; color: #9fd16b; }
+  #info { min-height: 1.4em; color: #ffd04a; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1600" height="900"></canvas>
+<div id="salon" hidden><div>
+  <h2>Jouer en ligne</h2>
+  <div id="s-choix">
+    <p><button id="b-creer">Créer une partie</button></p>
+    <p>ou rejoindre : <input id="i-code" maxlength="6" autocomplete="off" spellcheck="false" aria-label="Code de la partie"> <button id="b-rejoindre">Rejoindre</button></p>
+  </div>
+  <div id="s-code" hidden>
+    <p>Donnez ce code à votre ami :</p>
+    <p><span id="code"></span> <button id="b-copier">Copier</button></p>
+  </div>
+  <p id="info" role="status"></p>
+  <p id="s-go" hidden><button id="b-go">Commencer</button></p>
+  <details id="s-manuel">
+    <summary>Le code ne marche pas ? Échange manuel</summary>
+    <p>L'hôte : <button id="b-inviter">1. Créer une invitation</button></p>
+    <textarea id="t-a" placeholder="Invitation : l'hôte la copie et l'envoie ; l'ami la colle ici" aria-label="Invitation"></textarea>
+    <p>L'ami : <button id="b-accepter">2. Répondre à l'invitation</button></p>
+    <textarea id="t-b" placeholder="Réponse : l'ami la copie et la renvoie ; l'hôte la colle ici" aria-label="Réponse"></textarea>
+    <p>L'hôte : <button id="b-conclure">3. Se connecter</button></p>
+  </details>
+  <p><button id="b-retour">Retour au menu</button></p>
+</div></div>
+<script>
+// Moteur de « Cendres et Remparts » : aucune dépendance à l'affichage.
+// Tout passe par partie.ordre(joueur, action) : c'est ce qui permettra le jeu en ligne.
+(function (racine) {
+  'use strict';
+
+  const L = 1600;                 // largeur du champ de bataille
+  const PORTE = [150, L - 150];   // x de la porte de chaque château
+  const AGES = ['Bois', 'Fer', 'Vapeur', 'Éclair', 'Astres'];
+  const COUT_AGE = [450, 900, 1600, 2600];
+  const FORCE_AGE = 1.4;          // chaque âge multiplie PV et dégâts, y compris de l'existant
+  const MAX_UNITES = [14, 14, 26];
+  // Réglages d'équilibre (voir equilibrage.js)
+  const R = { croissance: 1.13, revCroissance: 1.07, base: 1.15, revBase: 10.5, chateau: 1600, crepuscule: 210, palier: 60, rageIA: 0.2, siege: 1.5, usure: 0.8, cendres: 0.0012,
+    force: { agressif: 1.22, defensif: 0.85, ruse: 1 } };
+
+  const UNITES = {
+    lancier:  { nom: 'Lancier',  cout: 30,  pv: 100, deg: 12, cd: 0.9, portee: 36,  vit: 55,  fort: 'cavalier', bonus: 1.8, chateau: 1 },
+    archer:   { nom: 'Archer',   cout: 45,  pv: 55,  deg: 11, cd: 1.1, portee: 210, vit: 50,  fort: 'lancier',  bonus: 1.5, chateau: 0.6 },
+    cavalier: { nom: 'Cavalier', cout: 70,  pv: 130, deg: 16, cd: 0.8, portee: 38,  vit: 110, fort: 'archer',   bonus: 2,   chateau: 1 },
+    colosse:  { nom: 'Colosse',  cout: 140, pv: 420, deg: 26, cd: 1.6, portee: 44,  vit: 36,  fort: null,       bonus: 1,   chateau: 3 },
+  };
+  const DEFENSES = {
+    baliste: { nom: 'Baliste', cout: 110, deg: 18, cd: 1.0, portee: 430, zone: 0,  max: 3 },
+    mortier: { nom: 'Mortier', cout: 180, deg: 24, cd: 2.4, portee: 520, zone: 75, max: 3 },
+  };
+  const ACTIONS = ['lancier', 'archer', 'cavalier', 'colosse', 'assaut', 'baliste', 'mortier', 'barricade', 'mine', 'age'];
+
+  // Renforts permanents : un niveau par choix ; chaque 5e niveau compte double.
+  const RENFORTS = {
+    lames:     { nom: 'Lames',      pas: 0.10, texte: 'Dégâts des soldats' },
+    armures:   { nom: 'Armures',    pas: 0.10, texte: 'Vie des soldats' },
+    remparts:  { nom: 'Remparts',   pas: 0.15, texte: 'Vie du château et des barricades' },
+    artillerie:{ nom: 'Artillerie', pas: 0.15, texte: 'Dégâts des défenses' },
+    filons:    { nom: 'Filons',     pas: 0.08, texte: 'Revenu en or' },
+    coffres:   { nom: 'Coffres',    pas: 0.40, texte: 'Or de départ' },
+    savoir:    { nom: 'Savoir',     pas: 0.08, texte: 'Âges moins chers' },
+    butin:     { nom: 'Butin',      pas: 0.25, texte: 'Or gagné par ennemi vaincu' },
+  };
+  const ADVERSAIRES = [
+    { nom: 'Ronce',    titre: 'la Meute',   style: 'agressif',  desc: 'Attaque sans relâche avec des troupes rapides.' },
+    { nom: 'Granit',   titre: 'le Bastion', style: 'defensif',  desc: 'Se couvre de défenses, puis envoie des colosses.' },
+    { nom: 'Vespérine',titre: 'l\'Énigme',  style: 'ruse',      desc: 'Recrute toujours ce qui contre vos troupes.' },
+  ];
+  const STYLES = {
+    agressif: { partAge: 0.16, vague: 0.82, def: 0.08, mine: 0.10, poids: { lancier: 4, archer: 2, cavalier: 4, colosse: 1 }, taille: [2, 4], contre: 0.1 },
+    defensif: { partAge: 0.26, vague: 0.55, def: 0.30, mine: 0.15, poids: { lancier: 2, archer: 4, cavalier: 1, colosse: 3 }, taille: [3, 6], contre: 0.1 },
+    ruse:     { partAge: 0.22, vague: 0.68, def: 0.16, mine: 0.16, poids: { lancier: 3, archer: 3, cavalier: 3, colosse: 2 }, taille: [2, 5], contre: 0.75 },
+    allie:    { partAge: 0.24, vague: 0.64, def: 0.18, mine: 0.18, poids: { lancier: 3, archer: 3, cavalier: 2, colosse: 2 }, taille: [2, 4], contre: 0.5 },
+  };
+  const CONTRE = { lancier: 'archer', archer: 'cavalier', cavalier: 'lancier', colosse: 'lancier' };
+
+  function adversaire(niveau) {
+    const a = ADVERSAIRES[(niveau - 1) % ADVERSAIRES.length];
+    const tour = Math.floor((niveau - 1) / ADVERSAIRES.length);
+    return Object.assign({}, a, { nom: a.nom + (tour ? ' ' + 'I'.repeat(Math.min(tour + 1, 3)) + (tour > 2 ? '+' + (tour - 2) : '') : '') });
+  }
+  const valeurRenfort = (cle, niv) => RENFORTS[cle].pas * (niv + Math.floor(niv / 5));
+
+  function creerPartie(opt) {
+    const niveau = opt.niveau || 1;
+    const perm = {};
+    for (const k in RENFORTS) perm[k] = valeurRenfort(k, (opt.renforts || {})[k] || 0);
+    let graine = (opt.graine || 1) >>> 0;
+    const hasard = () => { // mulberry32 : reproductible
+      graine = (graine + 0x6D2B79F5) >>> 0;
+      let t = graine;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const adv = adversaire(niveau);
+    // au-delà du 11e adversaire la montée ralentit, pour que les renforts continuent de compter
+    const rang = Math.min(niveau - 1, 10) + Math.max(0, niveau - 11) * 0.5;
+    const forceAdv = R.base * R.force[adv.style] * Math.pow(R.croissance, rang);
+    const revAdv = Math.pow(R.revCroissance, rang);
+
+    const p = {
+      niveau, adv, perm, t: 0, fini: null, id: 1,
+      unites: [], tirs: [], evts: [],
+      joueurs: [0, 1, 2].map(i => ({
+        i, equipe: i === 2 ? 1 : 0, or: i === 2 ? 130 : Math.round(80 * (1 + perm.coffres)),
+        mines: 0, def: { baliste: 0, mortier: 0 }, recharge: 0, appel: 0, tues: 0,
+        ia: i === 2 ? adv.style : (opt.bots && opt.bots[i] ? 'allie' : null),
+        pense: 0.5 + i * 0.2, but: null, file: [], attente: 0,
+      })),
+      camps: [0, 1].map(e => ({
+        age: 0, fonds: 0, pv: 0, max: 0, cdTir: 0, cdDef: {}, assaut: 0, jauge: 0, touche: 0,
+      })),
+    };
+    const baseChateau = e => R.chateau * (e === 0 ? 1 + perm.remparts : forceAdv);
+    for (const e of [0, 1]) p.camps[e].pv = p.camps[e].max = baseChateau(e);
+
+    // --- Forces -----------------------------------------------------------
+    const ageMul = e => Math.pow(FORCE_AGE, p.camps[e].age);
+    // Crépuscule : passé ce délai, les murs s'effritent et l'IA s'emballe ; aucune partie ne s'éternise.
+    const nuit = () => Math.max(0, p.t - R.crepuscule) / R.palier;
+    const rage = () => 1 + nuit() * R.rageIA;
+    const siege = () => 1 + nuit() * R.siege;
+    const usure = () => 1 / (1 + nuit() * R.usure);
+    function multPv(e) { return ageMul(e) * (e === 0 ? 1 + perm.armures : forceAdv); }
+    function multDeg(e) {
+      return ageMul(e) * (e === 0 ? 1 + perm.lames : forceAdv * rage()) * (p.camps[e].assaut > 0 ? 1.5 : 1);
+    }
+    function multDef(e) { return usure() * ageMul(e) * (e === 0 ? 1 + perm.artillerie : forceAdv); }
+    function pvBarricade(e) { return 480 * ageMul(e) * (e === 0 ? 1 + perm.remparts : forceAdv); }
+    const revenu = j => j.equipe === 0
+      ? (5 + 1.6 * j.mines) * (1 + perm.filons)
+      : (R.revBase + 2.2 * j.mines) * revAdv * (1 + p.t / 60 * 0.05);
+
+    const compte = (i, type) => p.unites.filter(u => u.prop === i && (!type ? u.type !== 'barricade' : u.type === type)).length;
+    const barricade = i => p.unites.find(u => u.prop === i && u.type === 'barricade');
+    function coutAge(e) {
+      const c = COUT_AGE[p.camps[e].age];
+      if (c === undefined) return null;
+      return Math.round(e === 0 ? c / (1 + perm.savoir) : c);
+    }
+    function cout(i, a) {
+      const j = p.joueurs[i];
+      if (UNITES[a]) return UNITES[a].cout;
+      if (DEFENSES[a]) return Math.round(DEFENSES[a].cout * Math.pow(1.6, j.def[a]));
+      if (a === 'barricade') return 80;
+      if (a === 'mine') return Math.round(90 * Math.pow(1.45, j.mines));
+      if (a === 'age') {
+        const c = coutAge(j.equipe);
+        return c === null ? 0 : Math.min(50, c - p.camps[j.equipe].fonds);
+      }
+      return 0;
+    }
+    // '' si possible, sinon la raison
+    function blocage(i, a) {
+      const j = p.joueurs[i], c = p.camps[j.equipe];
+      if (p.fini) return 'Terminé';
+      if (UNITES[a]) {
+        if (compte(i) >= MAX_UNITES[i]) return 'Armée pleine';
+        if (j.recharge > 0) return '…';
+      } else if (DEFENSES[a]) {
+        if (j.def[a] >= DEFENSES[a].max * (i === 2 ? 1.34 : 1)) return 'Maximum';
+      } else if (a === 'barricade') {
+        const b = barricade(i);
+        if (b && b.pv >= b.max * 0.98) return 'Intacte';
+      } else if (a === 'mine') {
+        if (j.mines >= 6) return 'Maximum';
+      } else if (a === 'age') {
+        if (coutAge(j.equipe) === null) return 'Âge final';
+      } else if (a === 'assaut') {
+        if (c.assaut > 0) return 'En cours';
+        if (c.jauge < 100) return 'Jauge ' + Math.floor(c.jauge) + ' %';
+        if (j.appel > 0) return 'Appel lancé !';
+      }
+      if (j.or < cout(i, a)) return 'Pas assez d\'or';
+      return '';
+    }
+    function creerUnite(i, type) {
+      const j = p.joueurs[i], e = j.equipe, b = UNITES[type];
+      const pv = b.pv * multPv(e);
+      p.unites.push({ id: p.id++, prop: i, equipe: e, type, x: PORTE[e], voie: hasard(), pv, max: pv, cd: 0.2 + hasard() * 0.3, frappe: 0, touche: 0 });
+    }
+    function ordre(i, a) {
+      if (blocage(i, a)) { p.evts.push({ t: 'refus', i }); return false; }
+      const j = p.joueurs[i], e = j.equipe, c = p.camps[e], prix = cout(i, a);
+      j.or -= prix;
+      if (UNITES[a]) { creerUnite(i, a); j.recharge = i === 2 ? 0.25 : 0.45; p.evts.push({ t: 'recrue', i }); }
+      else if (DEFENSES[a]) { j.def[a]++; p.evts.push({ t: 'construit', i, x: PORTE[e] }); }
+      else if (a === 'barricade') {
+        const b = barricade(i), max = pvBarricade(e);
+        if (b) { b.max = max; b.pv = max; }
+        else {
+          const d = i === 1 ? 290 : 220;
+          p.unites.push({ id: p.id++, prop: i, equipe: e, type: 'barricade', x: e === 0 ? d : L - d, voie: 0.5, pv: max, max, cd: 9, frappe: 0, touche: 0 });
+        }
+        p.evts.push({ t: 'construit', i });
+      } else if (a === 'mine') { j.mines++; p.evts.push({ t: 'construit', i }); }
+      else if (a === 'age') {
+        c.fonds += prix;
+        p.evts.push({ t: 'verse', i });
+        const but = coutAge(e);
+        if (c.fonds >= but) monterAge(e);
+      } else if (a === 'assaut') {
+        j.appel = 5;
+        p.evts.push({ t: 'appel', i });
+        if (p.joueurs.filter(k => k.equipe === e).every(k => k.appel > 0)) {
+          c.assaut = 10; c.jauge = 0;
+          p.joueurs.forEach(k => { if (k.equipe === e) k.appel = 0; });
+          p.evts.push({ t: 'assaut', e });
+        }
+      }
+      return true;
+    }
+    function monterAge(e) {
+      const c = p.camps[e];
+      c.age++; c.fonds = 0;
+      for (const u of p.unites) if (u.equipe === e) { u.pv *= FORCE_AGE; u.max *= FORCE_AGE; }
+      const gain = c.max * 0.2;
+      c.max += gain; c.pv = Math.min(c.max, c.pv + gain);
+      p.evts.push({ t: 'age', e, age: c.age });
+    }
+
+    // --- Combat -----------------------------------------------------------
+    function blesser(u, deg, par) {
+      if (u.pv <= 0) return;
+      u.pv -= deg; u.touche = 0.15;
+      if (u.pv > 0) return;
+      p.evts.push({ t: 'mort', x: u.x, voie: u.voie, type: u.type, e: u.equipe });
+      if (u.type === 'barricade') return;
+      const prix = UNITES[u.type].cout, vainq = 1 - u.equipe;
+      p.camps[vainq].jauge = Math.min(100, p.camps[vainq].jauge + prix / 12);
+      if (par !== undefined && par >= 0) p.joueurs[par].tues++;
+      if (vainq === 0) { // butin partagé entre les deux joueurs
+        const part = prix * 0.22 * (1 + perm.butin);
+        p.joueurs[0].or += part; p.joueurs[1].or += part;
+      } else p.joueurs[2].or += prix * 0.30;
+    }
+    function blesserChateau(e, deg) {
+      const c = p.camps[e];
+      c.pv -= deg * siege(); c.touche = 0.2;
+      if (c.pv <= 0 && !p.fini) {
+        c.pv = 0;
+        p.fini = e === 1 ? 'victoire' : 'defaite';
+        p.evts.push({ t: 'fin', r: p.fini });
+      }
+    }
+    function tirer(genre, e, prop, x0, cible, deg, zone) {
+      const dur = genre === 'mortier' ? 0.9 : 0.35;
+      p.tirs.push({ genre, e, prop, x0, x1: cible ? cible.x : PORTE[1 - e], cible: cible ? cible.id : 0, deg, zone, t: 0, dur, voie: cible ? cible.voie : 0.5 });
+    }
+    function impact(s) {
+      if (s.zone) {
+        for (const u of p.unites) if (u.equipe !== s.e && Math.abs(u.x - s.x1) < s.zone) blesser(u, s.deg, s.prop);
+        p.evts.push({ t: 'explosion', x: s.x1 });
+      } else if (s.cible) {
+        const u = p.unites.find(v => v.id === s.cible);
+        if (u) blesser(u, s.deg, s.prop);
+      } else blesserChateau(1 - s.e, s.deg);
+    }
+    function plusProche(e, x, portee) {
+      let m = null, md = portee;
+      for (const u of p.unites) {
+        if (u.equipe === e || u.pv <= 0) continue;
+        const d = Math.abs(u.x - x);
+        if (d <= md) { md = d; m = u; }
+      }
+      return m;
+    }
+    function bougerUnite(u, dt) {
+      u.frappe = Math.max(0, u.frappe - dt); u.touche = Math.max(0, u.touche - dt);
+      if (u.type === 'barricade' || u.pv <= 0) return;
+      const b = UNITES[u.type], e = u.equipe, sens = e === 0 ? 1 : -1;
+      const furie = p.camps[e].assaut > 0;
+      u.cd -= dt * (furie ? 1.25 : 1);
+      const cible = plusProche(e, u.x, b.portee);
+      const dChateau = Math.abs(PORTE[1 - e] - u.x);
+      if (cible || dChateau <= b.portee) {
+        if (u.cd <= 0) {
+          u.cd = b.cd; u.frappe = 0.25;
+          let deg = b.deg * multDeg(e);
+          if (cible) {
+            if (cible.type === b.fort) deg *= b.bonus;
+            if (cible.type === 'barricade' && u.type === 'colosse') deg *= 2;
+            if (u.type === 'archer') tirer('fleche', e, u.prop, u.x, cible, deg, 0);
+            else { blesser(cible, deg, u.prop); p.evts.push({ t: 'coup', x: u.x }); }
+          } else if (u.type === 'archer') tirer('fleche', e, u.prop, u.x, null, deg * b.chateau, 0);
+          else { blesserChateau(1 - e, deg * b.chateau); p.evts.push({ t: 'coup', x: u.x }); }
+        }
+      } else u.x += sens * b.vit * (furie ? 1.3 : 1) * dt;
+    }
+    function defendre(e, dt) {
+      const c = p.camps[e];
+      c.cdTir -= dt;
+      if (c.cdTir <= 0) { // les archers du château tirent toujours un peu
+        const u = plusProche(e, PORTE[e], 280);
+        if (u) { c.cdTir = 1.2; tirer('fleche', e, -1, PORTE[e], u, 9 * multDef(e), 0); }
+      }
+      for (const j of p.joueurs) if (j.equipe === e) for (const d in DEFENSES) for (let n = 0; n < j.def[d]; n++) {
+        const k = j.i + d + n, D = DEFENSES[d];
+        c.cdDef[k] = (c.cdDef[k] === undefined ? n * 0.3 : c.cdDef[k]) - dt;
+        if (c.cdDef[k] > 0) continue;
+        const u = plusProche(e, PORTE[e], D.portee);
+        if (u) { c.cdDef[k] = D.cd; tirer(d, e, j.i, PORTE[e], u, D.deg * multDef(e), D.zone); }
+      }
+    }
+
+    // --- Intelligence artificielle ----------------------------------------
+    function tirage(poids) {
+      let s = 0; for (const k in poids) s += poids[k];
+      let r = hasard() * s;
+      for (const k in poids) { r -= poids[k]; if (r <= 0) return k; }
+      return Object.keys(poids)[0];
+    }
+    function choisirUnite(j, S) {
+      if (hasard() < S.contre) {
+        const n = {}; let m = null;
+        for (const u of p.unites) if (u.equipe !== j.equipe && UNITES[u.type]) {
+          n[u.type] = (n[u.type] || 0) + UNITES[u.type].cout;
+          if (!m || n[u.type] > n[m]) m = u.type;
+        }
+        if (m) return CONTRE[m];
+      }
+      return tirage(S.poids);
+    }
+    function nouveauBut(j, S) {
+      const c = { vague: S.vague, def: S.def, mine: S.mine * (j.mines < 2 ? 2 : j.mines < 5 ? 0.8 : 0) };
+      const g = tirage(c);
+      if (g === 'mine') return { a: 'mine' };
+      if (g === 'def') {
+        const a = tirage({ baliste: 4, mortier: 3, barricade: 2 });
+        if (!['Maximum', 'Intacte'].includes(blocage(j.i, a))) return { a };
+      }
+      const n = S.taille[0] + Math.floor(hasard() * (S.taille[1] - S.taille[0] + 1)), liste = [];
+      for (let k = 0; k < n; k++) liste.push(choisirUnite(j, S));
+      // les troupes solides partent devant
+      liste.sort((a, b) => UNITES[b].pv - UNITES[a].pv);
+      return { vague: liste, prix: liste.reduce((s, t) => s + UNITES[t].cout, 0) };
+    }
+    function reflechir(j, dt) {
+      const S = STYLES[j.ia], e = j.equipe;
+      j.pense -= dt; j.attente += dt;
+      if (j.ia === 'allie' && j.appel <= 0 && !blocage(j.i, 'assaut')) {
+        const autre = p.joueurs[1 - j.i];
+        if (autre.appel > 0 || autre.ia) ordre(j.i, 'assaut');
+      }
+      if (j.file.length) {
+        if (j.recharge <= 0 && !blocage(j.i, j.file[0])) ordre(j.i, j.file.shift());
+        else if (j.or < 30) j.file = [];
+      }
+      if (j.pense > 0) return;
+      j.pense = 0.5;
+      if (j.ia !== 'allie' && !blocage(j.i, 'assaut') && compte(j.i) > 6) ordre(j.i, 'assaut');
+      // part de revenu mise de côté pour l'âge
+      if (coutAge(e) !== null) {
+        j.epargne = (j.epargne || 0) + revenu(j) * 0.5 * S.partAge;
+        if (j.epargne >= 50 && j.or >= 50) { if (ordre(j.i, 'age')) j.epargne -= 50; }
+      }
+      // danger : réagir tout de suite
+      let danger = 0, nous = 0;
+      for (const u of p.unites) {
+        const d = Math.abs(u.x - PORTE[e]);
+        if (d < 420) { if (u.equipe === e) nous++; else danger++; }
+      }
+      if (danger > nous && !j.file.length) {
+        if (!blocage(j.i, 'barricade') && hasard() < 0.25) ordre(j.i, 'barricade');
+        else { const t = choisirUnite(j, S); if (!blocage(j.i, t)) ordre(j.i, t); else if (!blocage(j.i, 'lancier')) ordre(j.i, 'lancier'); }
+        return;
+      }
+      if (j.file.length) return;
+      if (!j.but || j.attente > 25) { j.but = nouveauBut(j, S); j.attente = 0; }
+      if (j.but.vague) {
+        if (compte(j.i) + j.but.vague.length > MAX_UNITES[j.i]) { j.but = null; return; }
+        if (j.or >= j.but.prix) { j.file = j.but.vague; j.but = null; }
+      } else if (!blocage(j.i, j.but.a)) { ordre(j.i, j.but.a); j.but = null; }
+      else if (['Maximum', 'Intacte'].includes(blocage(j.i, j.but.a))) j.but = null;
+    }
+
+    // --- Pas de temps -----------------------------------------------------
+    function pas(dt) {
+      if (p.fini) return;
+      p.t += dt;
+      for (const j of p.joueurs) {
+        j.or += revenu(j) * dt;
+        j.recharge = Math.max(0, j.recharge - dt);
+        j.appel = Math.max(0, j.appel - dt);
+        if (j.ia) reflechir(j, dt);
+      }
+      for (const c of p.camps) { c.assaut = Math.max(0, c.assaut - dt); c.touche = Math.max(0, c.touche - dt); }
+      for (const u of p.unites) bougerUnite(u, dt);
+      defendre(0, dt); defendre(1, dt);
+      // la pluie de cendres ronge les deux châteaux : le plus abîmé tombe le premier
+      if (nuit() > 0 && !p.fini) {
+        const [a, b] = p.camps;
+        for (const c of p.camps) c.pv -= c.max * nuit() * R.cendres * dt;
+        if (a.pv <= 0 || b.pv <= 0) {
+          p.fini = a.pv / a.max > b.pv / b.max ? 'victoire' : 'defaite';
+          p.evts.push({ t: 'fin', r: p.fini });
+        }
+      }
+      for (const s of p.tirs) { s.t += dt; if (s.t >= s.dur) impact(s); }
+      p.tirs = p.tirs.filter(s => s.t < s.dur);
+      p.unites = p.unites.filter(u => u.pv > 0);
+    }
+    // --- Jeu en ligne : photo compacte envoyée par l'hôte, relue par l'invité ---
+    const TYPES = ['lancier', 'archer', 'cavalier', 'colosse', 'barricade'], GENRES = ['fleche', 'baliste', 'mortier'];
+    const ar = v => Math.round(v * 100) / 100;
+    function photo() {
+      return {
+        t: ar(p.t), f: p.fini,
+        c: p.camps.map(c => [c.age, c.fonds, c.pv, c.max, c.assaut, c.jauge, c.touche].map(ar)),
+        j: p.joueurs.map(j => [j.or, j.mines, j.def.baliste, j.def.mortier, j.recharge, j.appel].map(ar)),
+        u: p.unites.map(u => [u.id, u.prop, TYPES.indexOf(u.type), ar(u.x), ar(u.voie), ar(u.pv), ar(u.max), ar(u.frappe), ar(u.touche)]),
+        s: p.tirs.map(s => [GENRES.indexOf(s.genre), s.e, ar(s.x0), ar(s.x1), ar(s.t), s.dur, ar(s.voie)]),
+      };
+    }
+    function charger(f) {
+      const nb = l => { if (!l.every(v => typeof v === 'number' && isFinite(v))) throw new Error('photo illisible'); return l; };
+      p.t = nb([f.t])[0]; p.fini = f.f === 'victoire' || f.f === 'defaite' ? f.f : null;
+      p.camps.forEach((c, i) => { const l = nb(f.c[i]); [c.age, c.fonds, c.pv, c.max, c.assaut, c.jauge, c.touche] = l; c.age = Math.max(0, Math.min(AGES.length - 1, c.age | 0)); });
+      p.joueurs.forEach((j, i) => { [j.or, j.mines, j.def.baliste, j.def.mortier, j.recharge, j.appel] = nb(f.j[i]); });
+      const avant = new Map(p.unites.map(u => [u.id, u]));
+      p.unites = f.u.filter(l => nb(l) && TYPES[l[2]] && p.joueurs[l[1]]).map(l => {
+        const v = avant.get(l[0]), x = v && Math.abs(v.x - l[3]) < 120 ? v.x : l[3];
+        return { id: l[0], prop: l[1], equipe: p.joueurs[l[1]].equipe, type: TYPES[l[2]], x, vise: l[3], voie: l[4], pv: l[5], max: l[6], frappe: l[7], touche: l[8], cd: 9 };
+      });
+      p.tirs = f.s.filter(l => nb(l) && GENRES[l[0]]).map(l => ({ genre: GENRES[l[0]], e: l[1] ? 1 : 0, x0: l[2], x1: l[3], t: l[4], dur: l[5], voie: l[6] }));
+    }
+    function lisser(dt) { // entre deux photos, l'invité fait glisser les soldats et voler les flèches
+      for (const u of p.unites) {
+        u.x += (u.vise - u.x) * Math.min(1, dt * 12);
+        u.frappe = Math.max(0, u.frappe - dt); u.touche = Math.max(0, u.touche - dt);
+      }
+      for (const s of p.tirs) s.t += dt;
+      p.tirs = p.tirs.filter(s => s.t < s.dur);
+    }
+    function confier(i, ia) { p.joueurs[i].ia = ia ? 'allie' : null; p.joueurs[i].file = []; p.joueurs[i].but = null; }
+    return Object.assign(p, { photo, charger, lisser, confier, pas, ordre, cout, blocage, coutAge, revenu, compte, nuit });
+  }
+
+  const api = { L, PORTE, AGES, UNITES, DEFENSES, ACTIONS, RENFORTS, MAX_UNITES, adversaire, valeurRenfort, creerPartie, R };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else racine.Sim = api;
+})(typeof window !== 'undefined' ? window : globalThis);
+</script>
+<script>
+// Connexion directe entre deux navigateurs (WebRTC), sans bibliothèque.
+// La mise en relation par code court passe par le service public ntfy.sh, en messages chiffrés ;
+// l'échange manuel de codes longs s'en passe complètement.
+(function () {
+  'use strict';
+  const ICE = { iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }] };
+  const COURTIER = 'https://ntfy.sh/';
+  const LETTRES = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // sans I, L, O, 0, 1
+  const SILENCE = 12000, DELAI = 25000;
+  const alea = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), v => LETTRES[v % LETTRES.length]).join('');
+
+  // Le code donne, par dérivation lente, le nom du canal et la clé de chiffrement :
+  // le service ne voit ni le code, ni les adresses des joueurs contenues dans les messages.
+  async function derive(code) {
+    const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(code), 'PBKDF2', false, ['deriveBits']);
+    const b = new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: new TextEncoder().encode('cendres-et-remparts'), iterations: 250000 }, base, 384));
+    return {
+      canal: 'cer' + Array.from(b.slice(0, 16), v => v.toString(16).padStart(2, '0')).join(''),
+      cle: await crypto.subtle.importKey('raw', b.slice(16), 'AES-GCM', false, ['encrypt', 'decrypt']),
+    };
+  }
+  async function chiffrer(cle, o) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const c = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, cle, new TextEncoder().encode(JSON.stringify(o))));
+    let t = ''; for (const v of iv) t += String.fromCharCode(v); for (const v of c) t += String.fromCharCode(v);
+    return btoa(t);
+  }
+  async function dechiffrer(cle, t) {
+    const b = Uint8Array.from(atob(t), c => c.charCodeAt(0));
+    return JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b.slice(0, 12) }, cle, b.slice(12))));
+  }
+  const alleger = sdp => sdp.split('\r\n').filter(l => !/^a=candidate:.* tcp /i.test(l)).join('\r\n');
+
+  // ev : { code, ouvert, message, ferme, erreur, occupe }
+  function creer(ev) {
+    let flux = null, secret = null, pc = null, dc = null, fini = false, hote = false, vu = 0, minuteur = 0, essai = 0;
+    const jeton = alea(10); // distingue les deux joueurs sur le canal
+    const vivant = () => !!dc && dc.readyState === 'open';
+
+    function poster(o) {
+      if (!vivant() || dc.bufferedAmount > 300000) return false;
+      try { dc.send(JSON.stringify(o)); return true; } catch (e) { return false; }
+    }
+    function brancher(d, p) {
+      d.onopen = () => {
+        if (fini || p !== pc) return;
+        dc = d; vu = Date.now(); clearTimeout(essai);
+        ev.ouvert();
+      };
+      d.onmessage = m => {
+        if (fini || d !== dc) return;
+        vu = Date.now();
+        let o; try { o = JSON.parse(m.data); } catch (e) { return; }
+        if (!o || o.t === 'ping') return;
+        ev.message(o);
+      };
+      d.onclose = () => { if (d === dc) perdu(); };
+    }
+    function perdu() {
+      if (!dc) return;
+      const d = dc, p = pc; dc = null; pc = null;
+      try { d.close(); } catch (e) { /* déjà fermé */ }
+      try { p && p.close(); } catch (e) { /* déjà fermé */ }
+      if (!fini) ev.ferme();
+    }
+    function nouveauPc() {
+      if (pc) try { pc.close(); } catch (e) { /* déjà fermé */ }
+      const p = pc = new RTCPeerConnection(ICE);
+      p.ondatachannel = e => brancher(e.channel, p);
+      p.onconnectionstatechange = () => {
+        if (p !== pc || p.connectionState !== 'failed') return;
+        if (dc) perdu(); else if (!hote) ev.erreur('Les deux box refusent la connexion directe. Essayez un autre réseau (partage de connexion du téléphone, par exemple).');
+      };
+      return p;
+    }
+    const glace = p => new Promise(ok => {
+      if (p.iceGatheringState === 'complete') return ok();
+      const t = setTimeout(ok, 3000);
+      p.addEventListener('icegatheringstatechange', () => { if (p.iceGatheringState === 'complete') { clearTimeout(t); ok(); } });
+    });
+    async function offre() {
+      const p = nouveauPc();
+      brancher(p.createDataChannel('jeu'), p);
+      await p.setLocalDescription(await p.createOffer());
+      await glace(p);
+      return { type: 'offer', sdp: alleger(p.localDescription.sdp) };
+    }
+    async function reponse(o) {
+      const p = nouveauPc();
+      await p.setRemoteDescription({ type: 'offer', sdp: String(o.sdp) });
+      await p.setLocalDescription(await p.createAnswer());
+      await glace(p);
+      return { type: 'answer', sdp: alleger(p.localDescription.sdp) };
+    }
+
+    // --- Mise en relation par code court ----------------------------------
+    async function courtier(code, surOuverture, surMessage) {
+      try { secret = await derive(code); } catch (e) { ev.erreur('Ce navigateur ne permet pas le chiffrement. Utilisez l\'échange manuel.'); return; }
+      if (fini) return;
+      const f = flux = new EventSource(COURTIER + secret.canal + '/sse');
+      let pret = false;
+      const alarme = setTimeout(() => { if (!pret && !fini && !vivant()) ev.erreur('Service de mise en relation injoignable. Utilisez l\'échange manuel.'); }, 12000);
+      f.onopen = () => { if (pret || fini) return; pret = true; clearTimeout(alarme); surOuverture(); };
+      f.onmessage = async m => { // après une coupure, EventSource se reconnecte tout seul
+        if (fini) return;
+        let o;
+        try { o = await dechiffrer(secret.cle, JSON.parse(m.data).message); } catch (e) { return; }
+        if (!o || o.de === jeton || (o.pour && o.pour !== jeton)) return;
+        surMessage(o);
+      };
+    }
+    async function signaler(type, pour, payload) {
+      if (!secret || fini) return;
+      const corps = await chiffrer(secret.cle, { type, de: jeton, pour, payload });
+      const rep = await fetch(COURTIER + secret.canal + '?cache=no&firebase=no', { method: 'POST', body: corps });
+      if (!rep.ok) throw new Error('service ' + rep.status);
+    }
+
+    minuteur = setInterval(() => {
+      if (vivant()) { if (Date.now() - vu > SILENCE) perdu(); else poster({ t: 'ping' }); }
+    }, 3000);
+
+    return {
+      vivant, poster,
+      heberger() {
+        hote = true;
+        const code = alea(6);
+        courtier(code, () => ev.code(code), async o => {
+          if (o.type !== 'offre' || !o.de || !o.payload) return;
+          try { await signaler('reponse', o.de, vivant() ? { occupe: true } : await reponse(o.payload)); } catch (e) { console.warn('offre ignorée', e); }
+        });
+      },
+      rejoindre(code) {
+        essai = setTimeout(() => { if (!vivant() && !fini) ev.erreur('Pas de réponse. Vérifiez le code, et que la partie est bien ouverte chez votre ami.'); }, DELAI);
+        courtier(code, async () => {
+          let o;
+          try { o = await offre(); } catch (e) { ev.erreur('Connexion directe impossible dans ce navigateur.'); return; }
+          try { await signaler('offre', '', o); } catch (e) { ev.erreur('Service de mise en relation injoignable. Utilisez l\'échange manuel.'); }
+        }, async o => {
+          if (o.type !== 'reponse' || !o.payload) return;
+          if (o.payload.occupe) return ev.erreur('Cette partie a déjà deux joueurs.');
+          if (!pc || pc.signalingState !== 'have-local-offer') return;
+          try { await pc.setRemoteDescription({ type: 'answer', sdp: String(o.payload.sdp) }); } catch (e) { ev.erreur('Réponse illisible.'); }
+        });
+      },
+      // --- Échange manuel : aucun service de mise en relation ---------------
+      async inviter() { hote = true; return btoa(JSON.stringify(await offre())); },
+      async accepter(texte) { return btoa(JSON.stringify(await reponse(JSON.parse(atob(texte.trim()))))); },
+      async conclure(texte) { await pc.setRemoteDescription({ type: 'answer', sdp: String(JSON.parse(atob(texte.trim())).sdp) }); },
+      fermer() {
+        poster({ t: 'adieu' });
+        fini = true; clearInterval(minuteur); clearTimeout(essai);
+        const d = dc, p = pc, s = flux; dc = pc = flux = null;
+        setTimeout(() => { for (const x of [d, p, s]) try { x && x.close(); } catch (e) { /* déjà fermé */ } }, 150);
+      },
+    };
+  }
+  window.Reseau = { creer };
+})();
+</script>
+<script>
+// Affichage, commandes, sons et sauvegarde. Les règles sont dans sim.js.
+(function () {
+  'use strict';
+  const S = window.Sim, cv = document.getElementById('c'), g = cv.getContext('2d');
+  const W = 1600, H = 900, SOL = 505, POLICE = '"Trebuchet MS", "Segoe UI", sans-serif';
+  const COUL = { j: ['#3fb6a8', '#f0a63c', '#c8434f'], nom: ['Joueur 1', 'Joueur 2'] };
+  const PAL = [ // une ambiance par âge
+    { haut: '#37506b', bas: '#e8b98a', pierre: '#8a6a47', toit: '#5f7a3c', metal: '#a58a62', accent: '#9fd16b' },
+    { haut: '#3a4a66', bas: '#c9c3b8', pierre: '#8b8f96', toit: '#4b5a75', metal: '#c9d2da', accent: '#dfe8f0' },
+    { haut: '#4b3a44', bas: '#e0a06a', pierre: '#9a6b4f', toit: '#6e3f2e', metal: '#d9a648', accent: '#ffce6b' },
+    { haut: '#1f2550', bas: '#7f6bc0', pierre: '#5d6488', toit: '#3a3f7a', metal: '#8fe3ff', accent: '#6ff0ff' },
+    { haut: '#0c0f2a', bas: '#4a3a7d', pierre: '#39406b', toit: '#1c2350', metal: '#ffe9a8', accent: '#ffd76a' },
+  ];
+  const AGE_DE = ['du Bois', 'du Fer', 'de la Vapeur', 'de l\'Éclair', 'des Astres'];
+  const TXT = {
+    lancier: 'Solide et bon marché. Fort contre les cavaliers.',
+    archer: 'Tire de loin. Fort contre les lanciers.',
+    cavalier: 'Très rapide. Fort contre les archers.',
+    colosse: 'Lent et énorme. Triple dégâts sur le château.',
+    assaut: 'Appuyez tous les deux en moins de 5 s : soldats déchaînés.',
+    baliste: 'Tire vite, une cible. 3 au maximum.',
+    mortier: 'Tir lent, dégâts de zone. 3 au maximum.',
+    barricade: 'Bloque l\'ennemi devant le château. Réparable.',
+    mine: 'Augmente votre revenu en or. 6 au maximum.',
+    age: 'Verse 50 or au pot commun. Nouvel âge = soldats et défenses ×1,4.',
+  };
+  const NOMS = { assaut: 'Assaut', barricade: 'Barricade', mine: 'Mine', age: 'Âge' };
+  const nomAction = a => (S.UNITES[a] || S.DEFENSES[a] || {}).nom || NOMS[a];
+
+  // --- Sauvegarde ---------------------------------------------------------
+  const CLE = 'cendres-et-remparts';
+  const neuf = () => ({ niveau: 1, morts: 0, renforts: {}, choix: [0, 0], resultat: null, solo: false, muet: false });
+  let sauve = neuf();
+  try { sauve = Object.assign(sauve, JSON.parse(localStorage.getItem(CLE) || '{}')); } catch (e) { /* sauvegarde illisible : on repart à neuf */ }
+  let mode = 'duo'; // duo | solo | hote | invite
+  const garder = () => {
+    try {
+      let o = sauve;
+      if (mode === 'invite') { // la campagne appartient à l'hôte : l'invité ne garde que son réglage de son
+        o = Object.assign(neuf(), JSON.parse(localStorage.getItem(CLE) || '{}'), { muet: sauve.muet });
+      }
+      localStorage.setItem(CLE, JSON.stringify(o));
+    } catch (e) { /* stockage bloqué */ }
+  };
+
+  // --- Son ----------------------------------------------------------------
+  let ac = null;
+  const dernier = {};
+  function son(f, f2, dur, type, vol) {
+    if (sauve.muet) return;
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const t = ac.currentTime, o = ac.createOscillator(), v = ac.createGain();
+      o.type = type || 'square';
+      o.frequency.setValueAtTime(f, t);
+      o.frequency.exponentialRampToValueAtTime(Math.max(20, f2), t + dur);
+      v.gain.setValueAtTime(vol || 0.04, t);
+      v.gain.exponentialRampToValueAtTime(0.0005, t + dur);
+      o.connect(v).connect(ac.destination);
+      o.start(t); o.stop(t + dur);
+    } catch (e) { /* pas de son disponible */ }
+  }
+  function sonRare(cle, delai, ...a) {
+    const n = performance.now();
+    if (n - (dernier[cle] || 0) > delai) { dernier[cle] = n; son(...a); }
+  }
+
+  // --- État ---------------------------------------------------------------
+  let ecran = 'titre', partie = null, pause = false, vitesse = 1, depuis = 0, part = [], annonce = null, secousse = 0, refus = [0, 0];
+  let confirmer = 0, sansRenfort = false;
+  const curseur = [0, 0], curChoix = [0, 3];
+  let zones = [], souris = { x: -1, y: -1 };
+  let net = null, ami = false, evtsNet = [], chrono = 0, codeNet = '';
+  const enLigne = () => mode === 'hote' || mode === 'invite';
+  const moi = () => mode === 'invite' ? 1 : 0;
+  const seul = () => mode === 'solo' || (mode === 'hote' && !ami);   // l'allié est joué par l'IA
+  const humain = i => enLigne() ? i === moi() : !(mode === 'solo' && i === 1); // joué sur ce clavier
+  const present = i => humain(i) || (enLigne() && (mode === 'invite' || ami));
+  const nomJoueur = i => !enLigne() || !present(i) ? COUL.nom[i] : humain(i) ? 'Vous' : 'Votre ami';
+  const choixFini = () => sauve.choix[0] + sauve.choix[1] === 0;
+
+  function lancer() {
+    if (mode === 'invite') { net.poster({ t: 'go' }); return; }
+    partie = S.creerPartie({ niveau: sauve.niveau, renforts: sauve.renforts, graine: Date.now() % 1e9, bots: [false, seul()] });
+    evtsNet = []; vitesse = enLigne() ? 1 : vitesse;
+    ouvrirPartie();
+    diffuser();
+  }
+  function ouvrirPartie() {
+    ecran = 'jeu'; pause = false; part = []; depuis = 0; sansRenfort = false;
+    dire(partie.adv.nom + ', ' + partie.adv.titre, partie.adv.desc, 4);
+  }
+  function dire(a, b, t) { annonce = { a, b, t }; }
+  function finir() {
+    const v = partie.fini === 'victoire';
+    sauve.resultat = partie.fini;
+    if (!sansRenfort) sauve.choix = seul() ? [v ? 4 : 2, 0] : (v ? [2, 2] : [1, 1]);
+    if (v) sauve.niveau++; else sauve.morts++;
+    garder(); depuis = 0; ecran = 'choix';
+    diffuser();
+  }
+  function choisir(i, k) {
+    if (depuis < 1.2 || sauve.choix[i] <= 0) return;
+    if (mode === 'invite') { net.poster({ t: 'choix', k }); return; }
+    appliquerChoix(i, k);
+  }
+  function appliquerChoix(i, k) {
+    const cle = Object.keys(S.RENFORTS)[k];
+    sauve.renforts[cle] = (sauve.renforts[cle] || 0) + 1;
+    sauve.choix[i]--;
+    son(500, 1100, 0.25, 'triangle', 0.08);
+    garder();
+    if (choixFini()) depuis = 0;
+    diffuser();
+  }
+  function agir(i, a) {
+    if (!humain(i) || pause) return;
+    if (mode === 'invite') {
+      if (partie.blocage(i, a)) { refus[i] = 0.25; partie.evts.push({ t: 'refus', i }); } else net.poster({ t: 'ordre', a });
+    } else if (!partie.ordre(i, a)) refus[i] = 0.25;
+  }
+  function basculerPause() { if (mode === 'invite') net.poster({ t: 'pause', v: !pause }); else pause = !pause; }
+  function basculerVitesse() { if (mode === 'invite') net.poster({ t: 'vitesse' }); else vitesse = vitesse === 1 ? 2 : 1; }
+  function lancerSelon(solo) {
+    sauve.solo = solo; mode = solo ? 'solo' : 'duo';
+    demarrer();
+  }
+  function partagerChoix() {
+    const n = sauve.choix[0] + sauve.choix[1];
+    sauve.choix = seul() ? [n, 0] : [Math.ceil(n / 2), Math.floor(n / 2)];
+  }
+  function demarrer() {
+    if (!choixFini()) { partagerChoix(); depuis = 0; ecran = 'choix'; diffuser(); } // choix en attente d'une partie précédente
+    else lancer();
+    garder();
+  }
+
+  // --- Jeu en ligne -----------------------------------------------------------
+  // L'hôte calcule tout ; l'invité envoie ses ordres et affiche les photos reçues.
+  const VERSION = 1;
+  function diffuser() { // ce que l'invité doit savoir, en dehors du combat lui-même
+    if (mode !== 'hote' || !ami) return;
+    net.poster({ t: 'etat', ecran, niveau: sauve.niveau, morts: sauve.morts, renforts: sauve.renforts, choix: sauve.choix, resultat: sauve.resultat, partie: partie && ecran === 'jeu' ? partie.niveau : 0 });
+  }
+  function photographier(dt) {
+    chrono += dt;
+    if (mode !== 'hote' || !ami || ecran !== 'jeu' || chrono < 1 / 15) return;
+    chrono = 0;
+    if (net.poster({ t: 'photo', p: partie.photo(), z: pause, v: vitesse, e: evtsNet.slice(-60) })) evtsNet = [];
+  }
+  function messageHote(m) {
+    if (m.t === 'salut') {
+      if (m.v !== VERSION) { net.poster({ t: 'version' }); return; }
+      ami = true;
+      if (ecran === 'reseau') { info('Votre ami est connecté !'); el('s-go').hidden = false; el('s-choix').hidden = true; }
+      else {
+        if (ecran === 'jeu') { partie.confier(1, false); dire('Votre ami est de retour', '', 2.5); }
+        else if (ecran === 'choix') partagerChoix();
+      }
+      diffuser();
+    } else if (!ami) return;
+    else if (m.t === 'ordre') { if (ecran === 'jeu' && !pause && S.ACTIONS.includes(m.a)) partie.ordre(1, m.a); }
+    else if (m.t === 'choix') { if (ecran === 'choix' && sauve.choix[1] > 0 && Number.isInteger(m.k) && m.k >= 0 && m.k < 8) appliquerChoix(1, m.k); }
+    else if (m.t === 'go') { if (ecran === 'choix' && choixFini()) lancer(); }
+    else if (m.t === 'pause') { if (ecran === 'jeu') pause = !!m.v; }
+    else if (m.t === 'vitesse') vitesse = vitesse === 1 ? 2 : 1;
+    else if (m.t === 'adieu') amiParti();
+  }
+  function amiParti() {
+    if (!ami) return;
+    ami = false;
+    if (ecran === 'jeu') { if (!partie.fini) partie.confier(1, true); dire('Votre ami est déconnecté', 'Une IA prend sa place.' + (codeNet ? ' Le code ' + codeNet + ' reste valable.' : ''), 4); }
+    else if (ecran === 'choix') { partagerChoix(); garder(); }
+    else if (ecran === 'reseau') { info('Votre ami est parti. En attente…'); el('s-go').hidden = true; }
+  }
+  function messageInvite(m) {
+    if (m.t === 'version') { quitterReseau(); ouvrirSalon('Vos deux fichiers de jeu sont de versions différentes : prenez le même.'); }
+    else if (m.t === 'adieu') { quitterReseau(); ouvrirSalon('Votre ami a quitté la partie.'); }
+    else if (m.t === 'etat') {
+      const nb = (v, d) => Number.isInteger(v) && v >= 0 && v < 1e6 ? v : d;
+      sauve.niveau = Math.max(1, nb(m.niveau, 1)); sauve.morts = nb(m.morts, 0);
+      const avantChoix = sauve.choix.join(), etaitChoix = ecran === 'choix';
+      sauve.choix = [nb(m.choix[0], 0), nb(m.choix[1], 0)];
+      sauve.resultat = m.resultat === 'victoire' ? 'victoire' : 'defaite';
+      sauve.renforts = {};
+      for (const k in S.RENFORTS) if (nb(m.renforts[k], 0)) sauve.renforts[k] = m.renforts[k];
+      if (m.ecran === 'jeu' && nb(m.partie, 0) > 0) {
+        partie = S.creerPartie({ niveau: m.partie, renforts: sauve.renforts, graine: 1, bots: [false, false] });
+        el('salon').hidden = true; ouvrirPartie();
+      } else if (m.ecran === 'choix') {
+        el('salon').hidden = true; ecran = 'choix';
+        if (!etaitChoix || choixFini()) depuis = 0;
+        else if (avantChoix !== sauve.choix.join()) son(500, 1100, 0.25, 'triangle', 0.08);
+      } else if (ecran !== 'reseau') { partie = null; ouvrirSalon('Connecté. Votre ami va lancer la partie.'); }
+    } else if (m.t === 'photo') {
+      if (ecran !== 'jeu' || !partie) return;
+      partie.charger(m.p); pause = !!m.z; vitesse = m.v === 2 ? 2 : 1;
+      if (Array.isArray(m.e)) for (const e of m.e) if (e && typeof e.t === 'string' && !(e.t === 'refus') && !(e.t === 'age' && !PAL[e.age])) partie.evts.push(e);
+    }
+  }
+  const el = id => document.getElementById(id);
+  const info = s => { el('info').textContent = s; };
+  function ouvrirSalon(s) {
+    ecran = 'reseau'; pause = false;
+    const libre = !net;
+    el('salon').hidden = false; el('s-choix').hidden = !libre; el('s-manuel').hidden = !libre;
+    el('s-code').hidden = true; el('s-go').hidden = true;
+    info(s || '');
+  }
+  function connecter(role) {
+    if (net) net.fermer();
+    ami = false; codeNet = '';
+    mode = role;
+    if (role === 'invite') sauve = Object.assign(neuf(), { muet: sauve.muet });
+    const n = net = window.Reseau.creer({
+      code(c) { codeNet = c; el('code').textContent = c; el('s-code').hidden = false; info('En attente de votre ami…'); },
+      ouvert() {
+        if (n !== net) return;
+        el('s-manuel').hidden = true; el('s-choix').hidden = true;
+        if (role === 'invite') { n.poster({ t: 'salut', v: VERSION }); info('Connecté. Votre ami va lancer la partie.'); }
+      },
+      message(m) { if (n !== net) return; try { (role === 'hote' ? messageHote : messageInvite)(m); } catch (e) { console.warn('message ignoré', e); } },
+      ferme() {
+        if (n !== net) return;
+        if (role === 'hote') amiParti();
+        else { const c = codeNet; quitterReseau(); ouvrirSalon('Connexion perdue. Rejoignez avec le même code pour reprendre.'); el('i-code').value = c; }
+      },
+      erreur(s) { if (n !== net || ecran !== 'reseau') return; const c = codeNet; quitterReseau(); ouvrirSalon(s); if (c && role === 'invite') el('i-code').value = c; },
+    });
+    el('s-choix').hidden = true;
+    return n;
+  }
+  function quitterReseau() {
+    const n = net; net = null; ami = false;
+    if (n) n.fermer();
+    if (mode === 'invite') { // on retrouve sa propre campagne
+      const muet = sauve.muet;
+      sauve = neuf();
+      try { Object.assign(sauve, JSON.parse(localStorage.getItem(CLE) || '{}')); } catch (e) { /* illisible */ }
+      sauve.muet = muet;
+    }
+    mode = 'duo'; partie = null; pause = false;
+  }
+  function versMenu() { if (enLigne()) quitterReseau(); partie = null; pause = false; el('salon').hidden = true; ecran = 'titre'; }
+  el('b-creer').onclick = () => { info('Création…'); el('s-manuel').hidden = true; connecter('hote').heberger(); };
+  el('b-rejoindre').onclick = () => {
+    const c = el('i-code').value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (c.length !== 6) { info('Le code fait 6 caractères.'); return; }
+    info('Connexion…'); el('s-manuel').hidden = true;
+    const n = connecter('invite'); codeNet = c; n.rejoindre(c);
+  };
+  el('i-code').onkeydown = e => { if (e.key === 'Enter') el('b-rejoindre').click(); };
+  el('b-copier').onclick = async () => { try { await navigator.clipboard.writeText(codeNet); info('Code copié. En attente de votre ami…'); } catch (e) { info('Copie impossible : notez le code.'); } };
+  el('b-go').onclick = () => { if (!ami) return; el('salon').hidden = true; demarrer(); };
+  el('b-retour').onclick = versMenu;
+  el('b-inviter').onclick = async () => {
+    info('Préparation de l\'invitation…');
+    try { el('t-a').value = await connecter('hote').inviter(); el('t-a').select(); info('Copiez l\'invitation et envoyez-la à votre ami.'); } catch (e) { info('Connexion directe impossible dans ce navigateur.'); }
+  };
+  el('b-accepter').onclick = async () => {
+    info('Préparation de la réponse…');
+    try { el('t-b').value = await connecter('invite').accepter(el('t-a').value); el('t-b').select(); info('Copiez la réponse et renvoyez-la à votre ami.'); } catch (e) { quitterReseau(); ouvrirSalon('Invitation illisible : recopiez-la en entier.'); el('s-manuel').open = true; }
+  };
+  el('b-conclure').onclick = async () => {
+    if (mode !== 'hote' || !net) { info('Créez d\'abord une invitation.'); return; }
+    try { await net.conclure(el('t-b').value); info('Connexion…'); } catch (e) { info('Réponse illisible : recopiez-la en entier.'); }
+  };
+
+  // --- Commandes (positions physiques des touches : ZQSD sur AZERTY) ----------
+  const DIR = { KeyA: [0, -1], KeyD: [0, 1], KeyW: [0, -5], KeyS: [0, 5], ArrowLeft: [1, -1], ArrowRight: [1, 1], ArrowUp: [1, -5], ArrowDown: [1, 5] };
+  const OK = { Space: 0, Enter: 1, NumpadEnter: 1 };
+  function bouger(c, i, d, n, col) {
+    const l = Math.floor(c[i] / col), k = c[i] % col;
+    if (Math.abs(d) === 1) c[i] = l * col + (k + d + col) % col;
+    else c[i] = (c[i] + col) % n;
+  }
+  addEventListener('keydown', e => {
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+    if (ecran === 'reseau') { if (e.key === 'Escape') versMenu(); return; }
+    if (DIR[e.code] || e.code in OK) e.preventDefault();
+    if (e.key === 'm' || e.key === 'M') { if (!e.repeat) { sauve.muet = !sauve.muet; garder(); } return; }
+    if (ecran === 'jeu') {
+      if ((e.key === 'Escape' || e.code === 'KeyP') && !e.repeat) { basculerPause(); return; }
+      if (e.code === 'KeyV' && !e.repeat) { basculerVitesse(); return; }
+      if (DIR[e.code]) { const [j, d] = DIR[e.code], i = enLigne() ? moi() : j; bouger(curseur, i, d, 10, 5); }
+      else if (e.code in OK && !e.repeat) { const i = enLigne() ? moi() : OK[e.code]; agir(i, S.ACTIONS[curseur[i]]); }
+    } else if (ecran === 'choix') {
+      if (DIR[e.code]) { const [j, d] = DIR[e.code], i = enLigne() ? moi() : j; bouger(curChoix, i, d, 8, 4); }
+      else if (e.code in OK && !e.repeat) {
+        const i = enLigne() ? moi() : OK[e.code];
+        if (choixFini()) { if (depuis > 0.6) lancer(); } else choisir(i, curChoix[i]);
+      }
+    } else if (e.code in OK && !e.repeat) lancerSelon(sauve.solo);
+  });
+  addEventListener('blur', () => { if (ecran === 'jeu' && !partie.fini && !enLigne()) pause = true; });
+  function pos(e) {
+    const r = cv.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height };
+  }
+  const dans = z => souris.x >= z.x && souris.x <= z.x + z.w && souris.y >= z.y && souris.y <= z.y + z.h;
+  cv.addEventListener('mousemove', e => { souris = pos(e); });
+  cv.addEventListener('mousedown', e => {
+    souris = pos(e);
+    for (let k = zones.length - 1; k >= 0; k--) if (dans(zones[k])) { zones[k].f(); return; }
+  });
+  function zone(x, y, w, h, f) { const z = { x, y, w, h, f }; zones.push(z); return dans(z); }
+
+  // --- Outils de dessin -----------------------------------------------------
+  function rect(x, y, w, h, r, c, bord, ep) {
+    g.beginPath(); g.roundRect(x, y, w, h, r);
+    if (c) { g.fillStyle = c; g.fill(); }
+    if (bord) { g.strokeStyle = bord; g.lineWidth = ep || 2; g.stroke(); }
+  }
+  function texte(s, x, y, t, c, al, gras, max) {
+    g.font = (gras ? 'bold ' : '') + t + 'px ' + POLICE;
+    g.fillStyle = c || '#fff'; g.textAlign = al || 'left'; g.textBaseline = 'middle';
+    if (max) g.fillText(s, x, y, max); else g.fillText(s, x, y);
+  }
+  function jauge(x, y, w, h, r, c) {
+    rect(x, y, w, h, h / 2, 'rgba(0,0,0,.55)');
+    r = Math.max(0, Math.min(1, r));
+    if (r > 0.01) rect(x, y, Math.max(h, w * r), h, h / 2, c);
+  }
+  function poly(c, ...p) {
+    g.fillStyle = c; g.beginPath(); g.moveTo(p[0], p[1]);
+    for (let i = 2; i < p.length; i += 2) g.lineTo(p[i], p[i + 1]);
+    g.closePath(); g.fill();
+  }
+  function ligne(c, ep, ...p) {
+    g.strokeStyle = c; g.lineWidth = ep; g.lineCap = 'round'; g.beginPath(); g.moveTo(p[0], p[1]);
+    for (let i = 2; i < p.length; i += 2) g.lineTo(p[i], p[i + 1]);
+    g.stroke();
+  }
+  function rond(c, x, y, r) { g.fillStyle = c; g.beginPath(); g.arc(x, y, r, 0, 7); g.fill(); }
+
+  // --- Décor ------------------------------------------------------------------
+  function decor(t) {
+    const a = partie ? partie.camps[0].age : 0;
+    const d = g.createLinearGradient(0, 0, 0, SOL);
+    d.addColorStop(0, PAL[a].haut); d.addColorStop(1, PAL[a].bas);
+    g.fillStyle = d; g.fillRect(0, 0, W, H);
+    const nuit = partie ? Math.min(0.5, partie.nuit() * 0.12) : 0;
+    rond('rgba(255,240,210,.5)', 800, 190 + nuit * 300, 60);
+    if (a >= 3) for (let k = 0; k < 60; k++) rond('rgba(255,255,255,.6)', (k * 397) % W, (k * 173) % 300, 1 + k % 2);
+    for (let c = 0; c < 2; c++) {
+      g.fillStyle = c ? 'rgba(30,38,44,.55)' : 'rgba(40,50,66,.35)';
+      g.beginPath(); g.moveTo(0, SOL);
+      for (let x = 0; x <= W; x += 40) g.lineTo(x, (c ? 430 : 350) + Math.sin(x * 0.006 + c * 2) * 40 + Math.sin(x * 0.017 + c) * 18);
+      g.lineTo(W, SOL); g.fill();
+    }
+    g.fillStyle = '#3d3a2c'; g.fillRect(0, SOL - 45, W, H);
+    g.fillStyle = '#4b4734'; g.fillRect(0, SOL - 45, W, 10);
+    g.fillStyle = 'rgba(0,0,0,.12)';
+    for (let k = 0; k < 40; k++) g.fillRect((k * 211) % W, SOL - 25 + (k * 37) % 100, 24, 3);
+    if (partie) { chateau(0, partie.camps[0]); chateau(1, partie.camps[1]); }
+    if (nuit) {
+      g.fillStyle = 'rgba(60,10,10,' + nuit * 0.6 + ')'; g.fillRect(0, 0, W, 600);
+      for (let k = 0; k < 70; k++) rond('rgba(220,210,200,.5)', (k * 149 + t * 25) % W, (k * 83 + t * (40 + k % 5 * 12)) % 590, 2);
+    }
+  }
+  function chateau(e, c) {
+    const age = c.age, P = PAL[age], n0 = performance.now();
+    g.save();
+    if (e === 1) { g.translate(W, 0); g.scale(-1, 1); }
+    if (c.touche > 0) g.translate(Math.sin(n0) * 2, 0);
+    const y = SOL + 20;
+    g.fillStyle = P.pierre; g.fillRect(0, y - 170, 130, 170);
+    g.fillStyle = 'rgba(0,0,0,.15)';
+    for (let k = 0; k < 7; k++) for (let m = 0; m < 4; m++) g.fillRect(m * 34 + (k % 2) * 14, y - 160 + k * 24, 24, 2);
+    g.fillStyle = P.pierre;
+    for (let m = 0; m < 5; m++) g.fillRect(m * 28, y - 186, 17, 18);
+    // donjon : il grandit avec l'âge
+    const h = 230 + age * 22;
+    g.fillRect(8, y - h, 66, h - 100);
+    poly(P.toit, 0, y - h, 41, y - h - 62, 82, y - h);
+    rond(P.accent, 41, y - h + 30, 11); rond('rgba(0,0,0,.45)', 41, y - h + 30, 7);
+    if (age >= 2) { ligne(P.metal, 6, 100, y - 170, 100, y - 225); rond('rgba(230,230,230,.25)', 102, y - 238 - (n0 / 60) % 25, 11); }
+    if (age >= 3) { ligne(P.accent, 2, 41, y - h - 62, 41, y - h - 85); rond(P.accent, 41, y - h - 85, 5 + Math.sin(n0 / 200)); }
+    if (age >= 4) { g.strokeStyle = P.accent; g.lineWidth = 3; g.beginPath(); g.ellipse(41, y - h - 85, 34, 10, 0, 0, 7); g.stroke(); }
+    // porte
+    g.fillStyle = '#2a1d15'; g.beginPath(); g.roundRect(84, y - 78, 46, 78, [23, 23, 0, 0]); g.fill();
+    for (let k = 0; k < 3; k++) ligne(P.metal, 3, 95 + k * 12, y - 66, 95 + k * 12, y);
+    ligne('#3a2a20', 3, 112, y - 180, 112, y - 250);
+    poly(e === 0 ? COUL.j[0] : COUL.j[2], 112, y - 250, 148, y - 239, 112, y - 228);
+    // défenses construites
+    let n = 0;
+    for (const j of partie.joueurs) if (j.equipe === e) for (const d of ['baliste', 'mortier']) for (let k = 0; k < j.def[d]; k++, n++) {
+      const x = 18 + (n % 6) * 21, yy = y - 192 + Math.floor(n / 6) * 45;
+      rond(COUL.j[j.i], x, yy + 5, 8);
+      if (d === 'baliste') { ligne(P.metal, 3, x - 6, yy - 10, x + 8, yy, x - 2, yy + 8); ligne('#222', 2, x - 4, yy, x + 13, yy - 3); }
+      else ligne('#22252a', 9, x, yy + 2, x + 7, yy - 10);
+    }
+    const r = c.pv / c.max;
+    if (r < 0.6) for (let k = 0; k < (r < 0.3 ? 3 : 1); k++) {
+      rond('rgba(255,120,40,.8)', 25 + k * 36, y - 110 - k * 14, 9 + Math.sin(n0 / 90 + k) * 3);
+      rond('rgba(40,40,40,.35)', 25 + k * 36, y - 130 - k * 14 - (n0 / 40) % 40, 13);
+    }
+    g.restore();
+  }
+
+  // --- Soldats ------------------------------------------------------------------
+  const yVoie = v => SOL + v * 62;
+  function soldat(u, t) {
+    const age = partie.camps[u.equipe].age, P = PAL[age], C = COUL.j[u.prop];
+    const marche = Math.sin(t * 9 + u.id), coup = u.frappe > 0 ? Math.sin(u.frappe / 0.25 * Math.PI) : 0;
+    const PEAU = '#e0b48c', NOIR = '#2c2723';
+    g.save();
+    g.translate(u.x, yVoie(u.voie));
+    g.fillStyle = 'rgba(0,0,0,.25)'; g.beginPath(); g.ellipse(0, 1, u.type === 'colosse' ? 30 : 15, 5, 0, 0, 7); g.fill();
+    g.scale(u.equipe === 0 ? 1 : -1, 1);
+    if (u.touche > 0) g.globalAlpha *= 0.6;
+    if (partie.camps[u.equipe].assaut > 0 && u.type !== 'barricade') { g.shadowColor = '#ffd04a'; g.shadowBlur = 16; }
+    if (u.type === 'barricade') {
+      for (let k = 0; k < 4; k++) poly(k % 2 ? P.pierre : P.metal, -16 + k * 9, 4, -11 + k * 9, -62 - (k % 2) * 10, -5 + k * 9, 4);
+      ligne('#3a2a20', 5, -16, -22, 20, -26);
+      g.fillStyle = C; g.fillRect(-6, -48, 14, 14);
+    } else if (u.type === 'colosse') {
+      ligne(NOIR, 11, -9, -26, -11 + marche * 6, -1); ligne(NOIR, 11, 9, -26, 11 - marche * 6, -1);
+      rect(-25, -78, 50, 56, 18, C); rect(-16, -70, 32, 22, 8, P.metal);
+      rond(PEAU, 8, -88, 12); rect(-4, -101, 25, 10, 4, P.metal); rond('#221', 14, -87, 2);
+      ligne(NOIR, 9, 18, -62, 34, -50 - coup * 14);
+      ligne(P.metal, 6, 32, -46, 44 + coup * 10, -84 + coup * 48); rond(P.metal, 44 + coup * 10, -84 + coup * 48, 13);
+      if (age >= 3) rond(P.accent, 0, -58, 6);
+    } else {
+      const cav = u.type === 'cavalier', y = cav ? -24 : 0, BAI = '#4a342a';
+      if (cav) {
+        g.fillStyle = BAI; g.beginPath(); g.ellipse(0, -24, 24, 11, 0, 0, 7); g.fill();
+        ligne(BAI, 9, 18, -28, 27, -44);
+        g.fillStyle = BAI; g.beginPath(); g.ellipse(32, -46, 9, 5, 0.4, 0, 7); g.fill();
+        for (const [x, s] of [[-16, 1], [-9, -1], [12, 1], [18, -1]]) ligne(BAI, 4, x, -18, x + marche * s * 8, 0);
+        ligne('#2a1c15', 4, -23, -27, -32, -14);
+        if (age >= 1) rect(-10, -36, 24, 13, 4, P.metal);
+      } else { ligne(NOIR, 5, -3, -14, -4 + marche * 6, 0); ligne(NOIR, 5, 3, -14, 4 - marche * 6, 0); }
+      rect(-9, y - 38, 18, 26, 7, C);
+      if (age >= 1) rect(-6, y - 35, 12, 10, 3, P.metal);
+      rond(PEAU, 1, y - 45, 8); rond('#221', 5, y - 45, 1.5);
+      if (u.type === 'archer') poly(age ? P.metal : '#3d5a2d', -9, y - 44, 0, y - 60, 10, y - 46);
+      else { rect(-8, y - 54, 18, 8, 4, age ? P.metal : '#6b4d33'); if (age >= 2) ligne(P.accent, 3, 0, y - 54, -5, y - 62); }
+      if (u.type === 'lancier') {
+        const a = coup * 14;
+        ligne('#6b4d33', 3, -8 + a, y - 20, 30 + a, y - 28); poly(P.metal, 28 + a, y - 32, 41 + a, y - 29, 28 + a, y - 24);
+        rond(P.metal, 9, y - 24, 8); rond(C, 9, y - 24, 4);
+      }
+      if (u.type === 'archer') {
+        g.strokeStyle = P.metal; g.lineWidth = 3; g.beginPath(); g.arc(8, y - 27, 15, -1.3, 1.3); g.stroke();
+        ligne('#eee', 1, 12, y - 41, 6 - coup * 5, y - 27, 12, y - 13);
+      }
+      if (cav) ligne(P.metal, 4, 10, y - 28, 24 + coup * 8, y - 46 + coup * 34);
+      if (age >= 4) { g.strokeStyle = P.accent; g.lineWidth = 2; g.beginPath(); g.ellipse(1, y - 62, 9, 3, 0, 0, 7); g.stroke(); }
+    }
+    g.restore();
+    const r = u.pv / u.max;
+    if (r < 0.99) jauge(u.x - 17, yVoie(u.voie) - (u.type === 'colosse' ? 116 : u.type === 'cavalier' ? 92 : 74), 34, 5, r, r > 0.4 ? '#7bd35f' : '#e2553f');
+  }
+  function tirs() {
+    for (const s of partie.tirs) {
+      const k = s.t / s.dur, y0 = s.x0 === S.PORTE[s.e] ? SOL - 160 : yVoie(s.voie) - 28, y1 = yVoie(s.voie) - 25;
+      const arc = s.genre === 'mortier' ? 170 : 26;
+      const pt = q => [s.x0 + (s.x1 - s.x0) * q, y0 + (y1 - y0) * q - Math.sin(q * Math.PI) * arc];
+      const [x, y] = pt(k), [xa, ya] = pt(Math.max(0, k - 0.09)), P = PAL[partie.camps[s.e].age];
+      if (s.genre === 'mortier') { rond('#1d1a18', x, y, 8); rond(P.accent, x, y, 4); }
+      else ligne(s.genre === 'baliste' ? P.accent : '#f4ead0', s.genre === 'baliste' ? 4 : 2, xa, ya, x, y);
+    }
+  }
+  function eclats(x, y, n, c, v) {
+    for (let k = 0; k < n && part.length < 400; k++) {
+      const a = Math.random() * 6.3;
+      part.push({ x, y, vx: Math.cos(a) * v * Math.random(), vy: -Math.abs(Math.sin(a)) * v * Math.random(), t: 0.4 + Math.random() * 0.4, c, r: 2 + Math.random() * 3 });
+    }
+  }
+  function evenements() {
+    if (mode === 'hote' && ami) evtsNet.push(...partie.evts);
+    for (const e of partie.evts) {
+      const nous = e.i !== undefined && e.i < 2;
+      if (e.t === 'mort') { eclats(e.x, yVoie(e.voie) - 25, 10, e.e ? COUL.j[2] : '#cfc8bb', 160); sonRare('mort', 70, 190, 60, 0.18, 'sawtooth', 0.03); }
+      else if (e.t === 'explosion') { eclats(e.x, SOL + 15, 18, '#ff9a3c', 230); secousse = Math.max(secousse, 0.12); sonRare('boum', 80, 110, 30, 0.3, 'sawtooth', 0.06); }
+      else if (e.t === 'coup') sonRare('coup', 90, 320, 180, 0.05, 'square', 0.012);
+      else if (e.t === 'recrue' && nous) son(380, 520, 0.09, 'triangle', 0.05);
+      else if (e.t === 'construit' && nous) son(240, 300, 0.15, 'square', 0.03);
+      else if (e.t === 'verse' && nous) son(700, 950, 0.1, 'sine', 0.05);
+      else if (e.t === 'refus' && nous && humain(e.i)) sonRare('refus', 120, 130, 100, 0.1, 'square', 0.03);
+      else if (e.t === 'appel' && nous) son(600, 620, 0.2, 'triangle', 0.06);
+      else if (e.t === 'assaut') {
+        dire(e.e ? 'Assaut ennemi !' : 'ASSAUT COMMUN !', e.e ? 'Tenez bon 10 secondes' : 'Vos soldats se déchaînent pendant 10 secondes', 2.2);
+        son(220, 880, 0.6, 'sawtooth', 0.06);
+      } else if (e.t === 'age') {
+        dire((e.e ? partie.adv.nom + ' passe à' : 'Nous passons à') + ' l\'âge ' + AGE_DE[e.age], e.e ? 'Ses troupes et ses défenses se renforcent' : 'Soldats et défenses : ×1,4', 2.6);
+        son(e.e ? 300 : 440, e.e ? 150 : 1320, 0.8, 'triangle', 0.09);
+        eclats(e.e ? W - 70 : 70, 300, 60, PAL[e.age].accent, 320);
+      } else if (e.t === 'fin') {
+        const v = e.r === 'victoire';
+        son(v ? 440 : 220, v ? 1200 : 50, 1.2, 'triangle', 0.1);
+        secousse = 0.6; eclats(v ? W - 80 : 80, 420, 90, '#ff9a3c', 420);
+      }
+    }
+    partie.evts.length = 0;
+  }
+
+  // --- Interface ------------------------------------------------------------------
+  function bouton(x, y, w, h, s, f, sous) {
+    const sur = zone(x, y, w, h, f);
+    rect(x, y, w, h, 14, sur ? '#4a5a52' : '#2c3531', sur ? '#9fd16b' : '#5d6b62', 3);
+    texte(s, x + w / 2, y + h / 2 - (sous ? 11 : 0), 24, '#fff', 'center', true, w - 20);
+    if (sous) texte(sous, x + w / 2, y + h / 2 + 17, 15, '#c5cfc8', 'center', false, w - 20);
+  }
+  function icone(a, x, y, i) {
+    const P = PAL[partie.camps[0].age];
+    if (S.UNITES[a]) {
+      const k = a === 'colosse' ? 0.5 : a === 'cavalier' ? 0.62 : 0.8;
+      g.save(); g.translate(x - 4, y + 26); g.scale(k, k); g.translate(0, -yVoie(0));
+      soldat({ id: 0, x: 0, voie: 0, type: a, equipe: 0, prop: i, pv: 1, max: 1, frappe: 0, touche: 0 }, 0);
+      g.restore();
+    } else if (a === 'assaut') poly('#ffd04a', x - 4, y - 22, x + 12, y - 22, x + 3, y - 5, x + 14, y - 5, x - 8, y + 24, x - 1, y + 3, x - 12, y + 3);
+    else if (a === 'baliste') { g.strokeStyle = P.metal; g.lineWidth = 4; g.beginPath(); g.arc(x - 6, y, 19, -1.2, 1.2); g.stroke(); ligne('#e9dcc0', 4, x - 18, y, x + 22, y); }
+    else if (a === 'mortier') { ligne(P.metal, 15, x - 6, y + 10, x + 8, y - 10); rond('#1d1a18', x + 14, y - 18, 7); rond('#555', x - 8, y + 14, 8); }
+    else if (a === 'barricade') { for (let k = 0; k < 4; k++) poly(k % 2 ? P.pierre : P.metal, x - 24 + k * 12, y + 20, x - 17 + k * 12, y - 20, x - 10 + k * 12, y + 20); }
+    else if (a === 'mine') { rond('#e5b93c', x, y, 19); rond('#f8db74', x, y, 13); texte('+', x, y + 1, 24, '#8a6511', 'center', true); }
+    else if (a === 'age') poly(P.accent, x, y - 22, x + 20, y, x + 8, y, x + 8, y + 20, x - 8, y + 20, x - 8, y, x - 20, y);
+  }
+  function panneau(i) {
+    const x0 = 14 + i * 793, y0 = 598, w = 779, j = partie.joueurs[i], C = COUL.j[i], hum = humain(i);
+    rect(x0, y0, w, 294, 16, 'rgba(24,27,25,.95)', C, 3);
+    texte(present(i) ? nomJoueur(i) : 'Allié IA', x0 + 18, y0 + 27, 23, C, 'left', true);
+    rond('#e5b93c', x0 + 150, y0 + 26, 11);
+    texte(Math.floor(j.or) + '', x0 + 168, y0 + 27, 24, refus[i] > 0 ? '#ff7766' : '#ffe08a', 'left', true);
+    texte('+' + partie.revenu(j).toFixed(1).replace('.', ',') + '/s', x0 + 238, y0 + 28, 16, '#c9c2a8');
+    texte(partie.compte(i) + '/' + S.MAX_UNITES[i] + ' soldats', x0 + 318, y0 + 28, 16, '#c9c2a8');
+    texte(hum ? (enLigne() ? 'ZQSD ou flèches + Espace' : i === 0 ? 'ZQSD + Espace' : 'Flèches + Entrée') + '  ·  ou souris' : present(i) ? 'En ligne' : 'Joue tout seul', x0 + w - 18, y0 + 28, 15, '#9aa39d', 'right');
+    S.ACTIONS.forEach((a, k) => {
+      const bw = 146, bh = 98, x = x0 + 13 + (k % 5) * 152, y = y0 + 50 + Math.floor(k / 5) * 104;
+      const b = partie.blocage(i, a), prix = partie.cout(i, a), non = b && b !== '…';
+      const sel = hum && curseur[i] === k;
+      if (hum) zone(x, y, bw, bh, () => { curseur[i] = k; agir(i, a); });
+      const appelAutre = a === 'assaut' && partie.joueurs[1 - i].appel > 0 && j.appel <= 0;
+      rect(x, y, bw, bh, 10, appelAutre && Math.sin(performance.now() / 90) > 0 ? '#7a5d16' : non ? '#232725' : '#34403a', sel ? '#fff' : '#48544d', sel ? 4 : 1.5);
+      g.save(); if (non) g.globalAlpha = 0.45; icone(a, x + 32, y + 50, i); g.restore();
+      texte(nomAction(a), x + 64, y + 22, 17, non ? '#9aa39d' : '#fff', 'left', true, 78);
+      if (prix > 0) texte(prix + ' or', x + 64, y + 46, 16, j.or >= prix ? '#ffe08a' : '#e07a66', 'left', true);
+      let info = '';
+      if (a in j.def) info = j.def[a] + '/3';
+      else if (a === 'mine') info = j.mines + '/6';
+      else if (a === 'age') { const c = partie.coutAge(0); info = c === null ? '' : Math.floor(partie.camps[0].fonds) + '/' + c; }
+      else if (S.UNITES[a]) info = partie.compte(i, a) || '';
+      if (non && b !== 'Pas assez d\'or') info = b;
+      if (appelAutre) info = 'Répondez !';
+      texte(info + '', x + 64, y + (a === 'assaut' ? 52 : 68), 14, appelAutre ? '#ffd04a' : '#aab5ae', 'left', false, 78);
+      if (a === 'assaut') jauge(x + 64, y + 74, 72, 8, partie.camps[0].jauge / 100, '#ffd04a');
+      if (a === 'age' && partie.coutAge(0)) jauge(x + 64, y + 82, 72, 8, partie.camps[0].fonds / partie.coutAge(0), PAL[partie.camps[0].age].accent);
+    });
+    texte(hum ? TXT[S.ACTIONS[curseur[i]]] : present(i) ? 'Votre ami décide ici. L\'or de chacun est séparé.' : 'Il économise, recrute, défend et répond à vos assauts.', x0 + 18, y0 + 273, 17, '#d8dfd9', 'left', false, w - 36);
+  }
+  function bandeau() {
+    for (const e of [0, 1]) {
+      const c = partie.camps[e], x = e ? W - 474 : 14;
+      rect(x, 10, 460, 74, 12, 'rgba(18,20,22,.75)');
+      texte(e ? partie.adv.nom + ', ' + partie.adv.titre : 'Notre forteresse', x + 16, 30, 19, e ? '#ff9aa0' : '#bff0e6', 'left', true, 250);
+      texte('Âge ' + (c.age + 1) + '/5 : ' + S.AGES[c.age], x + 446, 30, 17, PAL[c.age].accent, 'right', true);
+      jauge(x + 14, 46, 432, 16, c.pv / c.max, e ? COUL.j[2] : COUL.j[0]);
+      texte(Math.ceil(c.pv) + ' / ' + Math.round(c.max), x + 230, 55, 13, '#fff', 'center', true);
+      const ca = partie.coutAge(e);
+      if (ca) jauge(x + 14, 68, 432, 7, c.fonds / ca, PAL[c.age].accent);
+    }
+    const m = Math.floor(partie.t / 60), s = Math.floor(partie.t % 60), n = partie.nuit();
+    rect(540, 10, 520, 82, 12, 'rgba(18,20,22,.45)');
+    texte(m + ':' + (s < 10 ? '0' : '') + s, 800, 28, 28, '#fff', 'center', true);
+    texte(n > 0 ? 'Pluie de cendres : les murs s\'effritent' : 'Adversaire ' + partie.niveau + '  ·  Morts ' + sauve.morts, 800, 55, 16, n > 0 ? '#ffb09a' : '#e8e2d4', 'center', n > 0);
+    texte('Échap pause · V vitesse ×' + vitesse + ' · M son ' + (sauve.muet ? 'coupé' : 'actif'), 800, 78, 14, 'rgba(255,255,255,.85)', 'center');
+  }
+  function voile(o) { g.fillStyle = 'rgba(10,9,9,' + o + ')'; g.fillRect(0, 0, W, H); }
+
+  function ecranTitre(t) {
+    decor(t); voile(0.5);
+    texte('CENDRES ET REMPARTS', 800, 150, 78, '#ffe3b0', 'center', true);
+    texte('Deux alliés, un château à faire tomber. Chaque défaite vous rend plus forts.', 800, 220, 25, '#eee', 'center');
+    const a = S.adversaire(sauve.niveau);
+    texte('Prochain adversaire : n° ' + sauve.niveau + ', ' + a.nom + ', ' + a.titre, 800, 285, 24, '#ff9aa0', 'center', true);
+    texte('Morts : ' + sauve.morts + '  ·  Renforts acquis : ' + Object.values(sauve.renforts).reduce((s, n) => s + n, 0), 800, 320, 19, '#ccc', 'center');
+    bouton(560, 355, 480, 72, 'Jouer en ligne avec un ami', () => ouvrirSalon(), 'Chacun sur son PC, avec un code');
+    bouton(560, 435, 480, 72, 'Jouer à deux ici', () => lancerSelon(false), 'Même écran : ZQSD + Espace et Flèches + Entrée');
+    bouton(560, 515, 480, 72, 'Jouer seul avec un allié IA', () => lancerSelon(true), 'ZQSD + Espace, ou la souris');
+    bouton(640, 598, 320, 42, confirmer > 0 ? 'Vraiment tout effacer ?' : 'Recommencer à zéro', () => {
+      if (confirmer > 0) { sauve = Object.assign(neuf(), { muet: sauve.muet }); garder(); confirmer = 0; } else confirmer = 3;
+    });
+    ['Soldats : lancier bat cavalier, cavalier bat archer, archer bat lancier. Le colosse brise les châteaux.',
+      'Défenses : balistes et mortiers sur le rempart, barricade devant la porte.',
+      'Économie : chacun a son or. Les mines rapportent, le pot commun fait monter tout le monde en âge.',
+      'Après 3 min 30, la pluie de cendres ronge les deux châteaux : le plus abîmé tombe le premier.',
+    ].forEach((s, k) => texte(s, 800, 680 + k * 36, 20, '#e6e0d2', 'center'));
+    texte('M : couper ou remettre le son', 800, 840, 17, '#bbb', 'center');
+  }
+  function ecranChoix(t) {
+    decor(t); voile(0.72);
+    const v = sauve.resultat === 'victoire', fini = choixFini(), a = S.adversaire(sauve.niveau);
+    texte(v ? 'VICTOIRE !' : 'LE CHÂTEAU EST TOMBÉ', 800, 90, 62, v ? '#bff0a0' : '#ff9a8a', 'center', true);
+    texte(fini ? 'Prochain combat : n° ' + sauve.niveau + ', ' + a.nom + ', ' + a.titre + '. ' + a.desc : 'Choisissez sur quel point vous renforcer, pour toujours.', 800, 150, 24, '#eee', 'center', false, 1500);
+    if (!fini) [0, 1].forEach(i => {
+      if (present(i)) texte(nomJoueur(i) + ' : ' + (sauve.choix[i] ? sauve.choix[i] + ' choix' : 'prêt'), seul() ? 800 : 560 + i * 480, 198, 23, COUL.j[i], 'center', true);
+    });
+    Object.keys(S.RENFORTS).forEach((c, k) => {
+      const R = S.RENFORTS[c], n = sauve.renforts[c] || 0, w = 340, h = 206, x = 84 + (k % 4) * 364, y = 236 + Math.floor(k / 4) * 230;
+      const sur = !fini && zone(x, y, w, h, () => choisir(enLigne() ? moi() : sauve.choix[0] > 0 ? 0 : 1, k));
+      rect(x, y, w, h, 16, sur ? '#37433c' : '#232926', '#4b564f', 2);
+      if (!fini) [0, 1].forEach(i => { if (humain(i) && sauve.choix[i] > 0 && curChoix[i] === k) rect(x - 2 - i * 5, y - 2 - i * 5, w + 4 + i * 10, h + 4 + i * 10, 18, null, COUL.j[i], 5); });
+      texte(R.nom, x + 20, y + 36, 29, '#ffe3b0', 'left', true);
+      texte('Niv. ' + n, x + w - 20, y + 36, 21, '#9fd16b', 'right', true);
+      texte(R.texte, x + 20, y + 78, 19, '#e3e8e4', 'left', false, w - 40);
+      const pc = m => c === 'savoir' ? '-' + Math.round((1 - 1 / (1 + S.valeurRenfort(c, m))) * 100) + ' %' : '+' + Math.round(S.valeurRenfort(c, m) * 100) + ' %';
+      texte((n ? pc(n) : '0 %') + (fini ? '' : '  →  ' + pc(n + 1)), x + 20, y + 120, 27, '#fff', 'left', true);
+      for (let m = 0; m < 5; m++) rect(x + 20 + m * 61, y + 154, 54, 12, 6, m < n % 5 ? '#9fd16b' : '#3d4741');
+      const dbl = (n + 1) % 5 === 0;
+      texte(dbl ? 'Le prochain niveau compte double !' : 'Niveau double : le n° ' + (Math.floor(n / 5) + 1) * 5, x + 20, y + 186, 15, dbl ? '#ffd04a' : '#95a099');
+    });
+    if (fini) bouton(560, 712, 480, 82, 'Au combat !', () => { if (depuis > 0.4) lancer(); }, 'Espace ou Entrée');
+    else texte(enLigne() || mode === 'solo' ? (sauve.choix[moi()] ? 'ZQSD puis Espace, ou clic' : 'Votre ami choisit…') : 'Joueur 1 : ZQSD puis Espace  ·  Joueur 2 : Flèches puis Entrée  ·  au clic : Joueur 1 d\'abord', 800, 755, 20, '#ccc', 'center');
+    bouton(660, 815, 280, 48, 'Menu', versMenu);
+  }
+
+  // --- Boucle ---------------------------------------------------------------------
+  let avant = performance.now(), reste = 0, horloge = 0;
+  function avancer(dt) {
+    horloge += dt; depuis += dt; confirmer = Math.max(0, confirmer - dt);
+    refus = refus.map(v => Math.max(0, v - dt)); secousse = Math.max(0, secousse - dt);
+    if (ecran === 'jeu' && !pause) {
+      if (mode === 'invite') partie.lisser(dt * vitesse);
+      else if (!partie.fini) {
+        reste += dt * vitesse;
+        while (reste >= 1 / 60) { partie.pas(1 / 60); reste -= 1 / 60; }
+        if (partie.fini) depuis = 0;
+      }
+      evenements();
+      if (annonce) { annonce.t -= dt; if (annonce.t <= 0) annonce = null; }
+      if (partie.fini && depuis > 2 && mode !== 'invite') finir();
+    }
+    photographier(dt);
+    for (const q of part) { q.t -= dt; q.x += q.vx * dt; q.y += q.vy * dt; q.vy += 420 * dt; }
+    part = part.filter(q => q.t > 0);
+  }
+  function dessiner() {
+    zones = [];
+    g.clearRect(0, 0, W, H);
+    if (ecran === 'titre' || ecran === 'reseau') { ecranTitre(horloge); if (ecran === 'reseau') zones = []; return; }
+    if (ecran === 'choix') { ecranChoix(horloge); return; }
+    g.save();
+    if (secousse > 0) g.translate((Math.random() - 0.5) * secousse * 30, (Math.random() - 0.5) * secousse * 30);
+    decor(horloge);
+    [...partie.unites].sort((a, b) => a.voie - b.voie).forEach(u => soldat(u, horloge));
+    tirs();
+    for (const q of part) { g.globalAlpha = Math.min(1, q.t * 2); rond(q.c, q.x, q.y, q.r); }
+    g.restore();
+    bandeau(); panneau(0); panneau(1);
+    if (annonce && !partie.fini) {
+      g.globalAlpha = Math.min(1, annonce.t * 2);
+      texte(annonce.a, 800, 165, 42, '#fff4d8', 'center', true, 1400); texte(annonce.b, 800, 208, 22, '#fff', 'center', false, 1400);
+      g.globalAlpha = 1;
+    }
+    if (partie.fini) texte(partie.fini === 'victoire' ? 'VICTOIRE !' : 'DÉFAITE', 800, 310, 90, partie.fini === 'victoire' ? '#bff0a0' : '#ff9a8a', 'center', true);
+    if (pause) {
+      zones = []; voile(0.65);
+      texte('PAUSE', 800, 300, 80, '#fff', 'center', true);
+      const paye = partie.t >= 120; // sinon on pourrait accumuler des renforts sans jouer
+      bouton(600, 380, 400, 70, 'Reprendre', basculerPause);
+      if (mode !== 'invite') bouton(600, 470, 400, 70, 'Abandonner ce combat', () => { pause = false; sansRenfort = !paye; partie.fini = 'defaite'; depuis = 2; }, paye ? 'Compte comme une mort, avec renfort' : 'Pas de renfort avant 2 minutes de combat');
+      bouton(600, 560, 400, 70, enLigne() ? 'Quitter la partie en ligne' : 'Retour au menu', versMenu, mode === 'invite' ? 'Une IA prendra votre place' : 'Le combat en cours est perdu, sans mort ni renfort');
+    }
+  }
+  function taille() {
+    const k = Math.min(innerWidth / W, innerHeight / H);
+    cv.style.width = W * k + 'px'; cv.style.height = H * k + 'px';
+  }
+  addEventListener('resize', taille); taille();
+  function tic() {
+    const n = performance.now();
+    avancer(Math.max(0, Math.min(0.25, (n - avant) / 1000))); avant = n;
+  }
+  function boucle() { tic(); dessiner(); requestAnimationFrame(boucle); }
+  // Onglet caché : le navigateur arrête l'affichage, mais la partie en ligne doit continuer.
+  try {
+    const w = new Worker(URL.createObjectURL(new Blob(['setInterval(()=>postMessage(0),50)'], { type: 'text/javascript' })));
+    w.onmessage = () => { if (enLigne() && performance.now() - avant > 120) tic(); };
+  } catch (e) { /* pas de tâche de fond : la partie ralentit si l'onglet est caché */ }
+  addEventListener('pagehide', () => { if (net) net.fermer(); });
+  requestAnimationFrame(boucle);
+  // Accès pour les essais depuis la console
+  window.Jeu = { get partie() { return partie; }, get sauve() { return sauve; }, get ecran() { return ecran; }, get pause() { return pause; }, get mode() { return mode; }, get ami() { return ami; }, get net() { return net; }, avancer, dessiner };
+})();
+</script>
+</body>
+</html>
