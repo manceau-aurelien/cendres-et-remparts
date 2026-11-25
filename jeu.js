@@ -18,20 +18,45 @@
     cavalier: 'Très rapide. Fort contre les archers.',
     colosse: 'Lent et énorme. Triple dégâts sur le château.',
     assaut: 'Appuyez tous les deux en moins de 5 s : soldats déchaînés.',
-    baliste: 'Tire vite, une cible. 3 au maximum.',
-    mortier: 'Tir lent, dégâts de zone. 3 au maximum.',
+    baliste: 'Tire vite, une seule cible.',
+    mortier: 'Tir lent, dégâts de zone.',
     barricade: 'Bloque l\'ennemi devant le château. Réparable.',
     mine: 'Augmente votre revenu en or. 6 au maximum.',
     age: 'Verse 50 or au pot commun. Nouvel âge = soldats et défenses ×1,4.',
   };
-  const NOMS = { assaut: 'Assaut', barricade: 'Barricade', mine: 'Mine', age: 'Âge' };
-  const nomAction = a => (S.UNITES[a] || S.DEFENSES[a] || {}).nom || NOMS[a];
+  const TXTS = {
+    guerre:  { special: 'Étendard : les soldats proches frappent 20 % plus fort.', pouvoir: 'Champion : un héros rejoint le combat.' },
+    rempart: { special: 'Garde-mur : encaisse beaucoup, les tirs lui font 60 % de dégâts en moins.', pouvoir: 'Dôme : répare le château et protège ses abords quelques secondes.' },
+    or:      { special: 'Mercenaire : chaque ennemi qu\'il abat vous rapporte 8 or à tous les deux.', pouvoir: 'Manne : de l\'or pour vous et pour votre allié.' },
+    ruse:    { special: 'Alchimiste : ses fioles frappent en zone et ralentissent.', pouvoir: 'Brume : les ennemis avancent moitié moins vite et frappent moins fort.' },
+  };
+  const COULV = { guerre: '#ff8a6b', rempart: '#8fb8e8', or: '#f2cf5b', ruse: '#c59bf0' };
+  const NOMS = { assaut: 'Assaut', barricade: 'Barricade', mine: 'Mine', age: 'Âge', special: 'Spéciale', pouvoir: 'Pouvoir' };
+  const nomAction = (a, i) => {
+    const v = partie.spes[i];
+    if (v && a === 'special') return S.UNITES[S.VOIES[v].unite].nom;
+    if (v && a === 'pouvoir') return S.VOIES[v].pouvoir;
+    return (S.UNITES[a] || S.DEFENSES[a] || {}).nom || NOMS[a];
+  };
+  const texteAction = (a, i) => a === 'special' || a === 'pouvoir'
+    ? (partie.spes[i] ? TXTS[partie.spes[i]][a] : 'Se débloque en choisissant une spécialité : 4 points dans une voie.') : TXT[a];
+  function titre(tal) {
+    const v = S.specialite(tal), d = S.voieDominante(tal);
+    return v ? S.VOIES[v].titre : d ? 'Voie ' + S.VOIES[d].nom : 'Recrue';
+  }
 
   // --- Sauvegarde ---------------------------------------------------------
   const CLE = 'cendres-et-remparts';
-  const neuf = () => ({ niveau: 1, morts: 0, renforts: {}, choix: [0, 0], resultat: null, solo: false, muet: false });
+  const neuf = () => ({ niveau: 1, morts: 0, talents: [{}, {}], choix: [0, 0], resultat: null, solo: false, muet: false });
   let sauve = neuf();
   try { sauve = Object.assign(sauve, JSON.parse(localStorage.getItem(CLE) || '{}')); } catch (e) { /* sauvegarde illisible : on repart à neuf */ }
+  if (sauve.renforts) { // ancienne sauvegarde : les renforts communs redeviennent des points à répartir
+    const n = Object.values(sauve.renforts).reduce((a, b) => a + (b | 0), 0) + (sauve.choix[0] | 0) + (sauve.choix[1] | 0);
+    sauve.choix = [Math.ceil(n / 2), Math.floor(n / 2)];
+    sauve.talents = [{}, {}]; sauve.resultat = null;
+    delete sauve.renforts;
+    try { localStorage.setItem(CLE, JSON.stringify(sauve)); } catch (e) { /* stockage bloqué */ }
+  }
   let mode = 'duo'; // duo | solo | hote | invite
   const garder = () => {
     try {
@@ -77,36 +102,40 @@
   const humain = i => enLigne() ? i === moi() : !(mode === 'solo' && i === 1); // joué sur ce clavier
   const present = i => humain(i) || (enLigne() && (mode === 'invite' || ami));
   const nomJoueur = i => !enLigne() || !present(i) ? COUL.nom[i] : humain(i) ? 'Vous' : 'Votre ami';
-  const choixFini = () => sauve.choix[0] + sauve.choix[1] === 0;
+  const choixFini = () => sauve.choix[0] + (seul() ? 0 : sauve.choix[1]) === 0;
+  let confR = [0, 0];
 
   function lancer() {
     if (mode === 'invite') { net.poster({ t: 'go' }); return; }
-    partie = S.creerPartie({ niveau: sauve.niveau, renforts: sauve.renforts, graine: Date.now() % 1e9, bots: [false, seul()] });
+    autoAllie();
+    partie = S.creerPartie({ niveau: sauve.niveau, talents: sauve.talents, graine: Date.now() % 1e9, bots: [false, seul()] });
     evtsNet = []; vitesse = enLigne() ? 1 : vitesse;
     ouvrirPartie();
     diffuser();
   }
   function ouvrirPartie() {
     ecran = 'jeu'; pause = false; part = []; depuis = 0; sansRenfort = false;
-    dire(partie.adv.nom + ', ' + partie.adv.titre, partie.adv.desc, 4);
+    const al = S.ALLIANCES[partie.allie];
+    dire(partie.adv.nom + ', ' + partie.adv.titre, partie.adv.desc + (al ? '  Votre alliance, ' + al.nom + ' : ' + al.texte + '.' : ''), 5);
   }
   function dire(a, b, t) { annonce = { a, b, t }; }
   function finir() {
     const v = partie.fini === 'victoire';
     sauve.resultat = partie.fini;
-    if (!sansRenfort) sauve.choix = seul() ? [v ? 4 : 2, 0] : (v ? [2, 2] : [1, 1]);
+    if (!sansRenfort) sauve.choix = sauve.choix.map(n => n + (v ? 2 : 1));
     if (v) sauve.niveau++; else sauve.morts++;
     garder(); depuis = 0; ecran = 'choix';
     diffuser();
   }
   function choisir(i, k) {
     if (depuis < 1.2 || sauve.choix[i] <= 0) return;
+    if (S.blocageTalent(sauve.talents[i], S.CLES[k])) { sonRare('refus', 120, 130, 100, 0.1, 'square', 0.03); return; }
     if (mode === 'invite') { net.poster({ t: 'choix', k }); return; }
     appliquerChoix(i, k);
   }
   function appliquerChoix(i, k) {
-    const cle = Object.keys(S.RENFORTS)[k];
-    sauve.renforts[cle] = (sauve.renforts[cle] || 0) + 1;
+    const cle = S.CLES[k], t = sauve.talents[i];
+    t[cle] = (t[cle] || 0) + 1;
     sauve.choix[i]--;
     son(500, 1100, 0.25, 'triangle', 0.08);
     garder();
@@ -125,22 +154,36 @@
     sauve.solo = solo; mode = solo ? 'solo' : 'duo';
     demarrer();
   }
-  function partagerChoix() {
-    const n = sauve.choix[0] + sauve.choix[1];
-    sauve.choix = seul() ? [n, 0] : [Math.ceil(n / 2), Math.floor(n / 2)];
+  function autoAllie() { // l'IA dépense les points du joueur absent, dans une voie qui complète la vôtre
+    if (!seul()) return;
+    const t = sauve.talents[1], d = S.voieDominante(sauve.talents[0]);
+    const v = S.specialite(t) || S.voieDominante(t) || (d === 'guerre' ? 'or' : 'guerre');
+    for (; sauve.choix[1] > 0; sauve.choix[1]--) { const k = S.autoTalent(t, v, Math.random); t[k] = (t[k] || 0) + 1; }
+    garder();
+  }
+  function reorienter(i) {
+    if (confR[i] <= 0) { confR[i] = 3; return; }
+    confR[i] = 0;
+    if (mode === 'invite') net.poster({ t: 'reset' }); else toutReprendre(i);
+  }
+  function toutReprendre(i) {
+    sauve.choix[i] += S.points(sauve.talents[i]);
+    sauve.talents[i] = {};
+    son(700, 200, 0.4, 'triangle', 0.07);
+    garder(); diffuser();
   }
   function demarrer() {
-    if (!choixFini()) { partagerChoix(); depuis = 0; ecran = 'choix'; diffuser(); } // choix en attente d'une partie précédente
+    if (!choixFini()) { depuis = 0; ecran = 'choix'; diffuser(); } // points en attente d'une partie précédente
     else lancer();
     garder();
   }
 
   // --- Jeu en ligne -----------------------------------------------------------
   // L'hôte calcule tout ; l'invité envoie ses ordres et affiche les photos reçues.
-  const VERSION = 1;
+  const VERSION = 2;
   function diffuser() { // ce que l'invité doit savoir, en dehors du combat lui-même
     if (mode !== 'hote' || !ami) return;
-    net.poster({ t: 'etat', ecran, niveau: sauve.niveau, morts: sauve.morts, renforts: sauve.renforts, choix: sauve.choix, resultat: sauve.resultat, partie: partie && ecran === 'jeu' ? partie.niveau : 0 });
+    net.poster({ t: 'etat', ecran, niveau: sauve.niveau, morts: sauve.morts, talents: sauve.talents, choix: sauve.choix, resultat: sauve.resultat, partie: partie && ecran === 'jeu' ? partie.niveau : 0 });
   }
   function photographier(dt) {
     chrono += dt;
@@ -155,12 +198,12 @@
       if (ecran === 'reseau') { info('Votre ami est connecté !'); el('s-go').hidden = false; el('s-choix').hidden = true; }
       else {
         if (ecran === 'jeu') { partie.confier(1, false); dire('Votre ami est de retour', '', 2.5); }
-        else if (ecran === 'choix') partagerChoix();
       }
       diffuser();
     } else if (!ami) return;
     else if (m.t === 'ordre') { if (ecran === 'jeu' && !pause && S.ACTIONS.includes(m.a)) partie.ordre(1, m.a); }
-    else if (m.t === 'choix') { if (ecran === 'choix' && sauve.choix[1] > 0 && Number.isInteger(m.k) && m.k >= 0 && m.k < 8) appliquerChoix(1, m.k); }
+    else if (m.t === 'choix') { if (ecran === 'choix' && sauve.choix[1] > 0 && Number.isInteger(m.k) && m.k >= 0 && m.k < S.CLES.length && !S.blocageTalent(sauve.talents[1], S.CLES[m.k])) appliquerChoix(1, m.k); }
+    else if (m.t === 'reset') { if (ecran === 'choix') toutReprendre(1); }
     else if (m.t === 'go') { if (ecran === 'choix' && choixFini()) lancer(); }
     else if (m.t === 'pause') { if (ecran === 'jeu') pause = !!m.v; }
     else if (m.t === 'vitesse') vitesse = vitesse === 1 ? 2 : 1;
@@ -170,7 +213,6 @@
     if (!ami) return;
     ami = false;
     if (ecran === 'jeu') { if (!partie.fini) partie.confier(1, true); dire('Votre ami est déconnecté', 'Une IA prend sa place.' + (codeNet ? ' Le code ' + codeNet + ' reste valable.' : ''), 4); }
-    else if (ecran === 'choix') { partagerChoix(); garder(); }
     else if (ecran === 'reseau') { info('Votre ami est parti. En attente…'); el('s-go').hidden = true; }
   }
   function messageInvite(m) {
@@ -182,10 +224,9 @@
       const avantChoix = sauve.choix.join(), etaitChoix = ecran === 'choix';
       sauve.choix = [nb(m.choix[0], 0), nb(m.choix[1], 0)];
       sauve.resultat = m.resultat === 'victoire' ? 'victoire' : 'defaite';
-      sauve.renforts = {};
-      for (const k in S.RENFORTS) if (nb(m.renforts[k], 0)) sauve.renforts[k] = m.renforts[k];
+      sauve.talents = [0, 1].map(i => { const t = {}; for (const k of S.CLES) { const n = nb(m.talents[i][k], 0); if (n) t[k] = n; } return t; });
       if (m.ecran === 'jeu' && nb(m.partie, 0) > 0) {
-        partie = S.creerPartie({ niveau: m.partie, renforts: sauve.renforts, graine: 1, bots: [false, false] });
+        partie = S.creerPartie({ niveau: m.partie, talents: sauve.talents, graine: 1, bots: [false, false] });
         el('salon').hidden = true; ouvrirPartie();
       } else if (m.ecran === 'choix') {
         el('salon').hidden = true; ecran = 'choix';
@@ -272,7 +313,7 @@
   function bouger(c, i, d, n, col) {
     const l = Math.floor(c[i] / col), k = c[i] % col;
     if (Math.abs(d) === 1) c[i] = l * col + (k + d + col) % col;
-    else c[i] = (c[i] + col) % n;
+    else c[i] = (c[i] + (d > 0 ? col : n - col)) % n;
   }
   addEventListener('keydown', e => {
     if (e.ctrlKey || e.altKey || e.metaKey) return;
@@ -282,10 +323,10 @@
     if (ecran === 'jeu') {
       if ((e.key === 'Escape' || e.code === 'KeyP') && !e.repeat) { basculerPause(); return; }
       if (e.code === 'KeyV' && !e.repeat) { basculerVitesse(); return; }
-      if (DIR[e.code]) { const [j, d] = DIR[e.code], i = enLigne() ? moi() : j; bouger(curseur, i, d, 10, 5); }
+      if (DIR[e.code]) { const [j, d] = DIR[e.code], i = enLigne() ? moi() : j; bouger(curseur, i, d, 12, 6); }
       else if (e.code in OK && !e.repeat) { const i = enLigne() ? moi() : OK[e.code]; agir(i, S.ACTIONS[curseur[i]]); }
     } else if (ecran === 'choix') {
-      if (DIR[e.code]) { const [j, d] = DIR[e.code], i = enLigne() ? moi() : j; bouger(curChoix, i, d, 8, 4); }
+      if (DIR[e.code]) { const [j, d] = DIR[e.code], i = enLigne() ? moi() : j; bouger(curChoix, i, d, S.CLES.length, 4); }
       else if (e.code in OK && !e.repeat) {
         const i = enLigne() ? moi() : OK[e.code];
         if (choixFini()) { if (depuis > 0.6) lancer(); } else choisir(i, curChoix[i]);
@@ -406,7 +447,7 @@
     const PEAU = '#e0b48c', NOIR = '#2c2723';
     g.save();
     g.translate(u.x, yVoie(u.voie));
-    g.fillStyle = 'rgba(0,0,0,.25)'; g.beginPath(); g.ellipse(0, 1, u.type === 'colosse' ? 30 : 15, 5, 0, 0, 7); g.fill();
+    g.fillStyle = 'rgba(0,0,0,.25)'; g.beginPath(); g.ellipse(0, 1, u.type === 'colosse' ? 30 : u.type === 'champion' ? 24 : 15, 5, 0, 0, 7); g.fill();
     g.scale(u.equipe === 0 ? 1 : -1, 1);
     if (u.touche > 0) g.globalAlpha *= 0.6;
     if (partie.camps[u.equipe].assaut > 0 && u.type !== 'barricade') { g.shadowColor = '#ffd04a'; g.shadowBlur = 16; }
@@ -423,6 +464,8 @@
       if (age >= 3) rond(P.accent, 0, -58, 6);
     } else {
       const cav = u.type === 'cavalier', y = cav ? -24 : 0, BAI = '#4a342a';
+      if (u.type === 'champion') { g.scale(1.55, 1.55); poly('#8e2430', -4, -38, -24 - marche * 2, -2, -6, -8); }
+      if (u.type === 'etendard') { ligne('#6b4d33', 3, -11, 0, -11, -84); poly(C, -11, -84, -42 - marche * 3, -76, -34, -68, -42 + marche * 3, -60, -11, -56); rond(P.accent, -11, -86, 4); }
       if (cav) {
         g.fillStyle = BAI; g.beginPath(); g.ellipse(0, -24, 24, 11, 0, 0, 7); g.fill();
         ligne(BAI, 9, 18, -28, 27, -44);
@@ -434,7 +477,10 @@
       rect(-9, y - 38, 18, 26, 7, C);
       if (age >= 1) rect(-6, y - 35, 12, 10, 3, P.metal);
       rond(PEAU, 1, y - 45, 8); rond('#221', 5, y - 45, 1.5);
-      if (u.type === 'archer') poly(age ? P.metal : '#3d5a2d', -9, y - 44, 0, y - 60, 10, y - 46);
+      if (u.type === 'alchimiste') { poly(C, -12, 0, -8, -38, 8, -38, 12, 0); poly('#4b3470', -10, -42, -3, -66, 11, -44); }
+      else if (u.type === 'mercenaire') { rect(-13, -55, 28, 5, 2, '#2f241c'); rect(-6, -64, 14, 11, 4, '#2f241c'); ligne('#e5b93c', 2, -6, -55, 8, -55); }
+      else if (u.type === 'champion') poly('#f2cf5b', -8, -50, -8, -62, -3, -55, 1, -64, 5, -55, 10, -62, 10, -50);
+      else if (u.type === 'archer') poly(age ? P.metal : '#3d5a2d', -9, y - 44, 0, y - 60, 10, y - 46);
       else { rect(-8, y - 54, 18, 8, 4, age ? P.metal : '#6b4d33'); if (age >= 2) ligne(P.accent, 3, 0, y - 54, -5, y - 62); }
       if (u.type === 'lancier') {
         const a = coup * 14;
@@ -445,21 +491,40 @@
         g.strokeStyle = P.metal; g.lineWidth = 3; g.beginPath(); g.arc(8, y - 27, 15, -1.3, 1.3); g.stroke();
         ligne('#eee', 1, 12, y - 41, 6 - coup * 5, y - 27, 12, y - 13);
       }
+      if (u.type === 'etendard') ligne(P.metal, 4, 8, -26, 22 + coup * 10, -40 + coup * 18);
+      if (u.type === 'garde') { rect(6 + coup * 5, -46, 15, 44, 5, P.pierre, P.metal, 3); rond(C, 13 + coup * 5, -25, 5); }
+      if (u.type === 'mercenaire') { ligne(P.metal, 4, 8, -26, 24 + coup * 8, -44 + coup * 26); ligne(P.metal, 4, 2, -22, 20 + coup * 12, -14 - coup * 8); }
+      if (u.type === 'alchimiste') { rond('#c59bf0', 15, -30 - coup * 12, 6); ligne('#eee', 2, 15, -36 - coup * 12, 15, -42 - coup * 12); }
+      if (u.type === 'champion') { ligne(P.metal, 6, 8, -26, 30 + coup * 8, -58 + coup * 50); ligne('#f2cf5b', 4, 6, -34, 18, -26); }
       if (cav) ligne(P.metal, 4, 10, y - 28, 24 + coup * 8, y - 46 + coup * 34);
       if (age >= 4) { g.strokeStyle = P.accent; g.lineWidth = 2; g.beginPath(); g.ellipse(1, y - 62, 9, 3, 0, 0, 7); g.stroke(); }
     }
     g.restore();
     const r = u.pv / u.max;
-    if (r < 0.99) jauge(u.x - 17, yVoie(u.voie) - (u.type === 'colosse' ? 116 : u.type === 'cavalier' ? 92 : 74), 34, 5, r, r > 0.4 ? '#7bd35f' : '#e2553f');
+    if (r < 0.99) jauge(u.x - 17, yVoie(u.voie) - (u.type === 'colosse' || u.type === 'champion' ? 116 : u.type === 'cavalier' ? 92 : 74), 34, 5, r, r > 0.4 ? '#7bd35f' : '#e2553f');
   }
   function tirs() {
     for (const s of partie.tirs) {
       const k = s.t / s.dur, y0 = s.x0 === S.PORTE[s.e] ? SOL - 160 : yVoie(s.voie) - 28, y1 = yVoie(s.voie) - 25;
-      const arc = s.genre === 'mortier' ? 170 : 26;
+      const arc = s.genre === 'mortier' ? 170 : s.genre === 'fiole' ? 70 : 26;
       const pt = q => [s.x0 + (s.x1 - s.x0) * q, y0 + (y1 - y0) * q - Math.sin(q * Math.PI) * arc];
       const [x, y] = pt(k), [xa, ya] = pt(Math.max(0, k - 0.09)), P = PAL[partie.camps[s.e].age];
-      if (s.genre === 'mortier') { rond('#1d1a18', x, y, 8); rond(P.accent, x, y, 4); }
+      if (s.genre === 'fiole') rond('#c59bf0', x, y, 6);
+      else if (s.genre === 'mortier') { rond('#1d1a18', x, y, 8); rond(P.accent, x, y, 4); }
       else ligne(s.genre === 'baliste' ? P.accent : '#f4ead0', s.genre === 'baliste' ? 4 : 2, xa, ya, x, y);
+    }
+  }
+  function effets(t) { // dôme du Bâtisseur et brume du Stratège
+    for (const e of [0, 1]) {
+      const c = partie.camps[e], x = S.PORTE[e];
+      if (c.dome > 0) {
+        g.globalAlpha = Math.min(1, c.dome) * (0.8 + Math.sin(t * 6) * 0.1);
+        g.beginPath(); g.ellipse(x, SOL + 70, 350, 330, 0, Math.PI, 0);
+        g.fillStyle = 'rgba(143,184,232,.2)'; g.fill(); g.strokeStyle = '#bcd9ff'; g.lineWidth = 4; g.stroke();
+        g.globalAlpha = 1;
+      }
+      if (c.brume > 0) for (const u of partie.unites) if (u.equipe === e && u.type !== 'barricade')
+        for (let k = 0; k < 3; k++) rond('rgba(190,170,220,.28)', u.x + Math.sin(t * 2 + u.id + k * 2) * 22, yVoie(u.voie) - 20 - k * 13, 19);
     }
   }
   function eclats(x, y, n, c, v) {
@@ -474,7 +539,12 @@
       const nous = e.i !== undefined && e.i < 2;
       if (e.t === 'mort') { eclats(e.x, yVoie(e.voie) - 25, 10, e.e ? COUL.j[2] : '#cfc8bb', 160); sonRare('mort', 70, 190, 60, 0.18, 'sawtooth', 0.03); }
       else if (e.t === 'explosion') { eclats(e.x, SOL + 15, 18, '#ff9a3c', 230); secousse = Math.max(secousse, 0.12); sonRare('boum', 80, 110, 30, 0.3, 'sawtooth', 0.06); }
-      else if (e.t === 'coup') sonRare('coup', 90, 320, 180, 0.05, 'square', 0.012);
+      else if (e.t === 'fiole') { eclats(e.x, SOL + 10, 10, '#c59bf0', 150); sonRare('fiole', 80, 500, 160, 0.2, 'triangle', 0.04); }
+      else if (e.t === 'pouvoir' && S.VOIES[e.v] && partie.joueurs[e.i]) {
+        const adv = e.i === 2;
+        dire((adv ? partie.adv.nom : present(e.i) ? nomJoueur(e.i) : 'Allié IA') + ' : ' + S.VOIES[e.v].pouvoir + ' !', '', 1.8);
+        son(adv ? 260 : 520, adv ? 130 : 1040, 0.5, 'triangle', 0.08);
+      } else if (e.t === 'coup') sonRare('coup', 90, 320, 180, 0.05, 'square', 0.012);
       else if (e.t === 'recrue' && nous) son(380, 520, 0.09, 'triangle', 0.05);
       else if (e.t === 'construit' && nous) son(240, 300, 0.15, 'square', 0.03);
       else if (e.t === 'verse' && nous) son(700, 950, 0.1, 'sine', 0.05);
@@ -505,8 +575,19 @@
   }
   function icone(a, x, y, i) {
     const P = PAL[partie.camps[0].age];
+    const sp = partie.spes[i];
+    if ((a === 'special' || a === 'pouvoir') && !sp) { g.strokeStyle = '#9aa39d'; g.lineWidth = 4; g.beginPath(); g.arc(x, y - 5, 9, Math.PI, 0); g.stroke(); rect(x - 14, y - 5, 28, 22, 4, '#9aa39d'); return; }
+    if (a === 'special') a = S.VOIES[sp].unite;
+    if (a === 'pouvoir') {
+      const c = COULV[sp];
+      if (sp === 'guerre') poly(c, x - 18, y + 16, x - 18, y - 16, x - 8, y - 2, x, y - 20, x + 8, y - 2, x + 18, y - 16, x + 18, y + 16);
+      else if (sp === 'rempart') { g.beginPath(); g.ellipse(x, y + 16, 20, 34, 0, Math.PI, 0); g.fillStyle = 'rgba(143,184,232,.4)'; g.fill(); g.strokeStyle = c; g.lineWidth = 4; g.stroke(); }
+      else if (sp === 'or') { rond(c, x - 8, y + 8, 11); rond(c, x + 9, y + 8, 11); rond('#fff1b0', x, y - 8, 11); }
+      else for (let k = 0; k < 3; k++) ligne(c, 5, x - 18 + k * 4, y - 12 + k * 12, x - 6, y - 17 + k * 12, x + 6, y - 8 + k * 12, x + 18 - k * 4, y - 13 + k * 12);
+      return;
+    }
     if (S.UNITES[a]) {
-      const k = a === 'colosse' ? 0.5 : a === 'cavalier' ? 0.62 : 0.8;
+      const k = a === 'colosse' ? 0.5 : a === 'cavalier' ? 0.58 : a === 'etendard' ? 0.5 : 0.8;
       g.save(); g.translate(x - 4, y + 26); g.scale(k, k); g.translate(0, -yVoie(0));
       soldat({ id: 0, x: 0, voie: 0, type: a, equipe: 0, prop: i, pv: 1, max: 1, frappe: 0, touche: 0 }, 0);
       g.restore();
@@ -525,29 +606,32 @@
     texte(Math.floor(j.or) + '', x0 + 168, y0 + 27, 24, refus[i] > 0 ? '#ff7766' : '#ffe08a', 'left', true);
     texte('+' + partie.revenu(j).toFixed(1).replace('.', ',') + '/s', x0 + 238, y0 + 28, 16, '#c9c2a8');
     texte(partie.compte(i) + '/' + S.MAX_UNITES[i] + ' soldats', x0 + 318, y0 + 28, 16, '#c9c2a8');
-    texte(hum ? (enLigne() ? 'ZQSD ou flèches + Espace' : i === 0 ? 'ZQSD + Espace' : 'Flèches + Entrée') + '  ·  ou souris' : present(i) ? 'En ligne' : 'Joue tout seul', x0 + w - 18, y0 + 28, 15, '#9aa39d', 'right');
+    texte(titre(partie.talents[i]), x0 + 430, y0 + 28, 17, COULV[partie.spes[i]] || '#c9c2a8', 'left', !!partie.spes[i], 135);
+    texte(hum ? (enLigne() ? 'ZQSD ou flèches + Espace' : i === 0 ? 'ZQSD + Espace' : 'Flèches + Entrée') : present(i) ? 'En ligne' : 'Joue tout seul', x0 + w - 18, y0 + 28, 15, '#9aa39d', 'right');
     S.ACTIONS.forEach((a, k) => {
-      const bw = 146, bh = 98, x = x0 + 13 + (k % 5) * 152, y = y0 + 50 + Math.floor(k / 5) * 104;
+      const bw = 122, bh = 98, x = x0 + 12 + (k % 6) * 126.6, y = y0 + 50 + Math.floor(k / 6) * 104;
       const b = partie.blocage(i, a), prix = partie.cout(i, a), non = b && b !== '…';
       const sel = hum && curseur[i] === k;
       if (hum) zone(x, y, bw, bh, () => { curseur[i] = k; agir(i, a); });
       const appelAutre = a === 'assaut' && partie.joueurs[1 - i].appel > 0 && j.appel <= 0;
       rect(x, y, bw, bh, 10, appelAutre && Math.sin(performance.now() / 90) > 0 ? '#7a5d16' : non ? '#232725' : '#34403a', sel ? '#fff' : '#48544d', sel ? 4 : 1.5);
-      g.save(); if (non) g.globalAlpha = 0.45; icone(a, x + 32, y + 50, i); g.restore();
-      texte(nomAction(a), x + 64, y + 22, 17, non ? '#9aa39d' : '#fff', 'left', true, 78);
-      if (prix > 0) texte(prix + ' or', x + 64, y + 46, 16, j.or >= prix ? '#ffe08a' : '#e07a66', 'left', true);
+      g.save(); if (non) g.globalAlpha = 0.45; icone(a, x + 26, y + 54, i); g.restore();
+      texte(nomAction(a, i), x + 8, y + 18, 16, non ? '#9aa39d' : COULV[(a === 'special' || a === 'pouvoir') && partie.spes[i]] || '#fff', 'left', true, bw - 16);
+      if (prix > 0) texte(prix + ' or', x + 54, y + 44, 16, j.or >= prix ? '#ffe08a' : '#e07a66', 'left', true);
       let info = '';
-      if (a in j.def) info = j.def[a] + '/3';
+      if (a in j.def) info = j.def[a] + '/' + partie.maxDef(i, a);
       else if (a === 'mine') info = j.mines + '/6';
       else if (a === 'age') { const c = partie.coutAge(0); info = c === null ? '' : Math.floor(partie.camps[0].fonds) + '/' + c; }
       else if (S.UNITES[a]) info = partie.compte(i, a) || '';
+      else if (a === 'special' && partie.spes[i]) info = partie.compte(i, S.VOIES[partie.spes[i]].unite) || '';
+      else if (a === 'pouvoir' && partie.spes[i] && !b) info = 'Prêt !';
       if (non && b !== 'Pas assez d\'or') info = b;
       if (appelAutre) info = 'Répondez !';
-      texte(info + '', x + 64, y + (a === 'assaut' ? 52 : 68), 14, appelAutre ? '#ffd04a' : '#aab5ae', 'left', false, 78);
-      if (a === 'assaut') jauge(x + 64, y + 74, 72, 8, partie.camps[0].jauge / 100, '#ffd04a');
-      if (a === 'age' && partie.coutAge(0)) jauge(x + 64, y + 82, 72, 8, partie.camps[0].fonds / partie.coutAge(0), PAL[partie.camps[0].age].accent);
+      texte(info + '', x + 54, y + (a === 'assaut' || a === 'pouvoir' ? 50 : 66), 14, appelAutre || info === 'Prêt !' ? '#ffd04a' : '#aab5ae', 'left', false, 64);
+      if (a === 'assaut') jauge(x + 54, y + 72, 60, 8, partie.camps[0].jauge / 100, '#ffd04a');
+      if (a === 'age' && partie.coutAge(0)) jauge(x + 54, y + 82, 60, 8, partie.camps[0].fonds / partie.coutAge(0), PAL[partie.camps[0].age].accent);
     });
-    texte(hum ? TXT[S.ACTIONS[curseur[i]]] : present(i) ? 'Votre ami décide ici. L\'or de chacun est séparé.' : 'Il économise, recrute, défend et répond à vos assauts.', x0 + 18, y0 + 273, 17, '#d8dfd9', 'left', false, w - 36);
+    texte(hum ? texteAction(S.ACTIONS[curseur[i]], i) : present(i) ? 'Votre ami décide ici. L\'or de chacun est séparé.' : 'Il économise, recrute, défend et répond à vos assauts.', x0 + 18, y0 + 273, 17, '#d8dfd9', 'left', false, w - 36);
   }
   function bandeau() {
     for (const e of [0, 1]) {
@@ -556,7 +640,7 @@
       texte(e ? partie.adv.nom + ', ' + partie.adv.titre : 'Notre forteresse', x + 16, 30, 19, e ? '#ff9aa0' : '#bff0e6', 'left', true, 250);
       texte('Âge ' + (c.age + 1) + '/5 : ' + S.AGES[c.age], x + 446, 30, 17, PAL[c.age].accent, 'right', true);
       jauge(x + 14, 46, 432, 16, c.pv / c.max, e ? COUL.j[2] : COUL.j[0]);
-      texte(Math.ceil(c.pv) + ' / ' + Math.round(c.max), x + 230, 55, 13, '#fff', 'center', true);
+      texte(Math.min(Math.ceil(c.pv), Math.round(c.max)) + ' / ' + Math.round(c.max), x + 230, 55, 13, '#fff', 'center', true);
       const ca = partie.coutAge(e);
       if (ca) jauge(x + 14, 68, 432, 7, c.fonds / ca, PAL[c.age].accent);
     }
@@ -574,7 +658,7 @@
     texte('Deux alliés, un château à faire tomber. Chaque défaite vous rend plus forts.', 800, 220, 25, '#eee', 'center');
     const a = S.adversaire(sauve.niveau);
     texte('Prochain adversaire : n° ' + sauve.niveau + ', ' + a.nom + ', ' + a.titre, 800, 285, 24, '#ff9aa0', 'center', true);
-    texte('Morts : ' + sauve.morts + '  ·  Renforts acquis : ' + Object.values(sauve.renforts).reduce((s, n) => s + n, 0), 800, 320, 19, '#ccc', 'center');
+    texte('Morts : ' + sauve.morts + '  ·  ' + [0, 1].map(i => COUL.nom[i] + ' : ' + titre(sauve.talents[i]) + ' (' + S.points(sauve.talents[i]) + ')').join('  ·  '), 800, 320, 19, '#ccc', 'center');
     bouton(560, 355, 480, 72, 'Jouer en ligne avec un ami', () => ouvrirSalon(), 'Chacun sur son PC, avec un code');
     bouton(560, 435, 480, 72, 'Jouer à deux ici', () => lancerSelon(false), 'Même écran : ZQSD + Espace et Flèches + Entrée');
     bouton(560, 515, 480, 72, 'Jouer seul avec un allié IA', () => lancerSelon(true), 'ZQSD + Espace, ou la souris');
@@ -582,44 +666,74 @@
       if (confirmer > 0) { sauve = Object.assign(neuf(), { muet: sauve.muet }); garder(); confirmer = 0; } else confirmer = 3;
     });
     ['Soldats : lancier bat cavalier, cavalier bat archer, archer bat lancier. Le colosse brise les châteaux.',
-      'Défenses : balistes et mortiers sur le rempart, barricade devant la porte.',
-      'Économie : chacun a son or. Les mines rapportent, le pot commun fait monter tout le monde en âge.',
+      'Chacun a son or. Les mines rapportent, le pot commun fait monter tout le monde en âge.',
+      'Après chaque combat, chacun place ses points : 4 dans une voie ouvrent sa spécialité (unité et pouvoir uniques).',
       'Après 3 min 30, la pluie de cendres ronge les deux châteaux : le plus abîmé tombe le premier.',
     ].forEach((s, k) => texte(s, 800, 680 + k * 36, 20, '#e6e0d2', 'center'));
     texte('M : couper ou remettre le son', 800, 840, 17, '#bbb', 'center');
   }
+  function valeur(k, n) {
+    const T = S.TALENTS[k];
+    return !T.pas ? (n ? 'acquis' : 'non') : T.brut ? '+' + n * T.pas : '+' + Math.round(n * T.pas * 100) + ' %';
+  }
   function ecranChoix(t) {
-    decor(t); voile(0.72);
-    const v = sauve.resultat === 'victoire', fini = choixFini(), a = S.adversaire(sauve.niveau);
-    texte(v ? 'VICTOIRE !' : 'LE CHÂTEAU EST TOMBÉ', 800, 90, 62, v ? '#bff0a0' : '#ff9a8a', 'center', true);
-    texte(fini ? 'Prochain combat : n° ' + sauve.niveau + ', ' + a.nom + ', ' + a.titre + '. ' + a.desc : 'Choisissez sur quel point vous renforcer, pour toujours.', 800, 150, 24, '#eee', 'center', false, 1500);
-    if (!fini) [0, 1].forEach(i => {
-      if (present(i)) texte(nomJoueur(i) + ' : ' + (sauve.choix[i] ? sauve.choix[i] + ' choix' : 'prêt'), seul() ? 800 : 560 + i * 480, 198, 23, COUL.j[i], 'center', true);
+    decor(t); voile(0.78);
+    const res = sauve.resultat, v = res === 'victoire', fini = choixFini(), a = S.adversaire(sauve.niveau);
+    texte(v ? 'VICTOIRE !' : res ? 'LE CHÂTEAU EST TOMBÉ' : 'VOS TALENTS', 800, 46, 46, v ? '#bff0a0' : res ? '#ff9a8a' : '#ffe3b0', 'center', true);
+    texte(fini ? 'Prochain combat : n° ' + sauve.niveau + ', ' + a.nom + ', ' + a.titre + '. ' + a.desc : 'Placez vos points, pour toujours. 4 points dans une voie ouvrent sa spécialité : une seule par joueur.', 800, 88, 20, '#eee', 'center', false, 1540);
+    [0, 1].forEach(i => {
+      const nom = present(i) ? nomJoueur(i) : 'Allié IA', tal = sauve.talents[i];
+      texte(nom + ' · ' + titre(tal) + (sauve.choix[i] > 0 && present(i) ? ' · ' + sauve.choix[i] + (sauve.choix[i] > 1 ? ' points à placer' : ' point à placer') : present(i) ? ' · prêt' : ''), i ? 1568 : 32, 118, 20, COUL.j[i], i ? 'right' : 'left', true, 560);
     });
-    Object.keys(S.RENFORTS).forEach((c, k) => {
-      const R = S.RENFORTS[c], n = sauve.renforts[c] || 0, w = 340, h = 206, x = 84 + (k % 4) * 364, y = 236 + Math.floor(k / 4) * 230;
-      const sur = !fini && zone(x, y, w, h, () => choisir(enLigne() ? moi() : sauve.choix[0] > 0 ? 0 : 1, k));
-      rect(x, y, w, h, 16, sur ? '#37433c' : '#232926', '#4b564f', 2);
-      if (!fini) [0, 1].forEach(i => { if (humain(i) && sauve.choix[i] > 0 && curChoix[i] === k) rect(x - 2 - i * 5, y - 2 - i * 5, w + 4 + i * 10, h + 4 + i * 10, 18, null, COUL.j[i], 5); });
-      texte(R.nom, x + 20, y + 36, 29, '#ffe3b0', 'left', true);
-      texte('Niv. ' + n, x + w - 20, y + 36, 21, '#9fd16b', 'right', true);
-      texte(R.texte, x + 20, y + 78, 19, '#e3e8e4', 'left', false, w - 40);
-      const pc = m => c === 'savoir' ? '-' + Math.round((1 - 1 / (1 + S.valeurRenfort(c, m))) * 100) + ' %' : '+' + Math.round(S.valeurRenfort(c, m) * 100) + ' %';
-      texte((n ? pc(n) : '0 %') + (fini ? '' : '  →  ' + pc(n + 1)), x + 20, y + 120, 27, '#fff', 'left', true);
-      for (let m = 0; m < 5; m++) rect(x + 20 + m * 61, y + 154, 54, 12, 6, m < n % 5 ? '#9fd16b' : '#3d4741');
-      const dbl = (n + 1) % 5 === 0;
-      texte(dbl ? 'Le prochain niveau compte double !' : 'Niveau double : le n° ' + (Math.floor(n / 5) + 1) * 5, x + 20, y + 186, 15, dbl ? '#ffd04a' : '#95a099');
+    const cleAl = S.alliance(sauve.talents[0], sauve.talents[1]), al = S.ALLIANCES[cleAl];
+    texte(al ? 'Alliance « ' + al.nom + ' » : ' + al.texte : 'Deux spécialités = un bonus d\'alliance', 800, 118, 17, al ? '#ffd04a' : '#95a099', 'center', !!al, 420);
+    Object.keys(S.VOIES).forEach((vo, c) => {
+      const x = 32 + c * 388;
+      texte(S.VOIES[vo].nom.toUpperCase(), x + 4, 156, 22, COULV[vo], 'left', true);
+      [0, 1].forEach(i => texte(S.points(sauve.talents[i], vo) + ' pts', x + 300 + i * 68, 157, 17, COUL.j[i], 'right', true));
     });
-    if (fini) bouton(560, 712, 480, 82, 'Au combat !', () => { if (depuis > 0.4) lancer(); }, 'Espace ou Entrée');
-    else texte(enLigne() || mode === 'solo' ? (sauve.choix[moi()] ? 'ZQSD puis Espace, ou clic' : 'Votre ami choisit…') : 'Joueur 1 : ZQSD puis Espace  ·  Joueur 2 : Flèches puis Entrée  ·  au clic : Joueur 1 d\'abord', 800, 755, 20, '#ccc', 'center');
-    bouton(660, 815, 280, 48, 'Menu', versMenu);
+    S.CLES.forEach((k, n) => {
+      const T = S.TALENTS[k], w = 372, h = 98, x = 32 + (n % 4) * 388, y = 174 + Math.floor(n / 4) * 104;
+      const bl = [0, 1].map(i => S.blocageTalent(sauve.talents[i], k));
+      const ouvert = [0, 1].some(i => humain(i) && sauve.choix[i] > 0 && !bl[i]);
+      const sur = !fini && zone(x, y, w, h, () => {
+        const i = enLigne() ? moi() : sauve.choix[0] > 0 || seul() ? 0 : 1;
+        curChoix[i] = n; choisir(i, n);
+      });
+      rect(x, y, w, h, 12, sur && ouvert ? '#3a4740' : T.rang === 3 ? '#2d2a35' : '#222825', ouvert ? COULV[T.voie] : '#3f4943', ouvert ? 2.5 : 1.5);
+      if (!fini) [0, 1].forEach(i => { if (humain(i) && sauve.choix[i] > 0 && curChoix[i] === n) rect(x - 1 - i * 4, y - 1 - i * 4, w + 2 + i * 8, h + 2 + i * 8, 13, null, COUL.j[i], 4); });
+      const libre = [0, 1].some(i => present(i) && (!bl[i] || sauve.talents[i][k]));
+      g.save(); if (!libre) g.globalAlpha = 0.5;
+      texte((T.rang === 3 ? '★ ' : '') + T.nom, x + 14, y + 24, 21, T.rang === 3 ? COULV[T.voie] : '#ffe3b0', 'left', true);
+      texte(T.texte, x + 14, y + 51, 15.5, '#dfe5e0', 'left', false, w - 28);
+      g.restore();
+      [0, 1].forEach(i => {
+        const m = sauve.talents[i][k] || 0;
+        texte(m ? valeur(k, m) + (T.pas ? '  (' + m + (T.max ? '/' + T.max : '') + ')' : '') : '-', x + 14 + i * 122, y + 79, 16, m ? COUL.j[i] : '#59635d', 'left', true, 115);
+      });
+      if (T.rang > 1) texte(T.rang === 4 ? 'spécialité + ' + S.SEUILS[4] + ' pts' : 'dès ' + S.SEUILS[T.rang] + ' pts', x + w - 14, y + 24, 14, '#95a099', 'right');
+    });
+    if (!fini) {
+      const hum = [0, 1].filter(i => humain(i) && sauve.choix[i] > 0);
+      hum.forEach((i, l) => {
+        const k = S.CLES[curChoix[i]], tal = sauve.talents[i], n = tal[k] || 0, b = S.blocageTalent(tal, k), T = S.TALENTS[k];
+        texte((hum.length > 1 || !enLigne() && !seul() ? COUL.nom[i] + ' : ' : '') + T.nom + ', ' + T.texte.charAt(0).toLowerCase() + T.texte.slice(1) + (T.pas ? '  ' + valeur(k, n) + ' → ' + valeur(k, n + 1) : '') + (b ? '   [' + b + ']' : ''), 800, 718 + l * 27, 19, b ? '#ff9a8a' : COUL.j[i], 'center', true, 1520);
+      });
+      if (!hum.length) texte('Votre ami choisit…', 800, 718, 19, '#ccc', 'center');
+      texte(enLigne() || seul() ? 'ZQSD puis Espace, ou clic. Chaque point endurcit aussi vos soldats (+4 %).' : 'Joueur 1 : ZQSD puis Espace  ·  Joueur 2 : Flèches puis Entrée  ·  au clic : Joueur 1 d\'abord. Chaque point endurcit aussi vos soldats (+4 %).', 800, 784, 17, '#bbb', 'center', false, 1540);
+    } else bouton(560, 712, 480, 78, 'Au combat !', () => { if (depuis > 0.4) lancer(); }, 'Espace ou Entrée');
+    bouton(660, 826, 280, 48, 'Menu', versMenu);
+    [0, 1].forEach(i => {
+      if (!humain(i) || !S.points(sauve.talents[i])) return;
+      bouton(i && !enLigne() ? 1168 : 32, 826, 400, 48, confR[i] > 0 ? 'Confirmer : tout reprendre ?' : 'Reprendre ' + (enLigne() || seul() ? 'mes points' : 'les points du ' + COUL.nom[i].toLowerCase()), () => reorienter(i));
+    });
   }
 
   // --- Boucle ---------------------------------------------------------------------
   let avant = performance.now(), reste = 0, horloge = 0;
   function avancer(dt) {
     horloge += dt; depuis += dt; confirmer = Math.max(0, confirmer - dt);
-    refus = refus.map(v => Math.max(0, v - dt)); secousse = Math.max(0, secousse - dt);
+    refus = refus.map(v => Math.max(0, v - dt)); confR = confR.map(v => Math.max(0, v - dt)); secousse = Math.max(0, secousse - dt);
     if (ecran === 'jeu' && !pause) {
       if (mode === 'invite') partie.lisser(dt * vitesse);
       else if (!partie.fini) {
@@ -644,7 +758,7 @@
     if (secousse > 0) g.translate((Math.random() - 0.5) * secousse * 30, (Math.random() - 0.5) * secousse * 30);
     decor(horloge);
     [...partie.unites].sort((a, b) => a.voie - b.voie).forEach(u => soldat(u, horloge));
-    tirs();
+    tirs(); effets(horloge);
     for (const q of part) { g.globalAlpha = Math.min(1, q.t * 2); rond(q.c, q.x, q.y, q.r); }
     g.restore();
     bandeau(); panneau(0); panneau(1);

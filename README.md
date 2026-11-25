@@ -2,7 +2,7 @@
 
 Jeu de guerre de châteaux incrémental, à deux contre une IA : en ligne, sur le même écran, ou seul avec un allié IA.
 
-Envoyez des soldats, bâtissez des défenses, économisez pour passer d'âge en âge. À chaque mort, chacun choisit un renfort permanent.
+Envoyez des soldats, bâtissez des défenses, économisez pour passer d'âge en âge. Après chaque combat, chacun place des points de talent permanents dans quatre voies (Guerre, Rempart, Or, Ruse). Quatre points dans une voie ouvrent sa spécialité : une unité et un pouvoir uniques. Deux spécialités donnent un bonus d'alliance.
 
 ## Jouer
 
@@ -25,4 +25,4 @@ Un joueur crée la partie et donne le code à 6 caractères, l'autre le rejoint.
 - `reseau.js` : connexion entre les deux navigateurs
 - `jeu.js`, `index.html` : affichage, commandes, salon en ligne
 - `assembler.js` : `node assembler.js` régénère `Cendres-et-Remparts.html`
-- `equilibrage.js` : `node equilibrage.js` fait jouer des campagnes à des bots
+- `equilibrage.js` : `node equilibrage.js` fait jouer des campagnes à des bots, par duo de voies
